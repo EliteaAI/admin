@@ -1,0 +1,167 @@
+# Add needed migrations (SQL + curl/task-based) here
+# Try to make migrations safe to run multiple times (e.g. "IF NOT EXISTS")
+# When release tags are moved - comment with release version will be added
+
+# 1.7.0 -> 2.0.0-beta
+
+INSERT INTO p_1.user_role (user_id, role_id) SELECT DISTINCT ur_all.user_id, r.id FROM p_1.user_role ur_all CROSS JOIN p_1.role r LEFT JOIN p_1.user_role ur_system ON ur_system.user_id = ur_all.user_id LEFT JOIN p_1.role r_system ON ur_system.role_id = r_system.id AND r_system.name = 'system' WHERE r.name = 'viewer' AND r_system.id IS NULL AND NOT EXISTS (SELECT 1 FROM p_1.user_role ur WHERE ur.user_id = ur_all.user_id AND ur.role_id = r.id);
+
+# Remove deprecated permissions for datasources and prompt_lib models
+DELETE FROM {pid}.role_permission WHERE permission LIKE 'models.datasource.%';
+DELETE FROM {pid}.role_permission WHERE permission LIKE 'models.datasources.%';
+DELETE FROM {pid}.role_permission WHERE permission LIKE 'models.prompt_lib.%';
+
+# ============================================================================
+# Remove per-project permissions, fold public roles into standard roles
+# ============================================================================
+# Context: project_role_permission was populated on every project creation but
+# never read at runtime (permission resolver uses central role_permission).
+# Public project had custom roles (prompt_lib_public, prompt_lib_moderators,
+# public_admin) that only existed in project_role, not in the central table,
+# so their permissions never actually resolved. This migration folds those
+# permissions into standard roles and removes the dead data.
+# ============================================================================
+
+# Step 1: Add public project permissions + monitoring to viewer role (central, mode='default')
+# These were previously assigned via prompt_lib_public and monitor custom roles
+INSERT INTO public.auth_core__role_permission (role_id, permission)
+SELECT r.id, p.perm
+FROM public.auth_core__role r
+CROSS JOIN (VALUES
+    ('models.promptlib_shared.author.detail'),
+    ('models.promptlib_shared.collection.details'),
+    ('models.promptlib_shared.collections.list'),
+    ('models.promptlib_shared.predict.post'),
+    ('models.promptlib_shared.public_collection.details'),
+    ('models.promptlib_shared.tags.list'),
+    ('models.promptlib_shared.trending_authors.list'),
+    ('models.prompt_lib.feedbacks.create'),
+    ('models.applications.public_applications.list'),
+    ('models.applications.public_application.details'),
+    ('models.applications.task.delete'),
+    ('models.applications.toolkits.details'),
+    ('models.applications.trending_authors.list'),
+    ('models.applications.export_import.export'),
+    ('models.applications.fork.post'),
+    ('models.chat.participants.create'),
+    ('models.chat.folders.get'),
+    ('models.chat.folders.update'),
+    ('models.chat.folders.create'),
+    ('monitoring.monitorable')
+) AS p(perm)
+WHERE r.name = 'viewer' AND r.mode = 'default'
+AND NOT EXISTS (
+    SELECT 1 FROM public.auth_core__role_permission rp
+    WHERE rp.role_id = r.id AND rp.permission = p.perm
+);
+
+# Step 2: Add moderator permissions to editor role (central, mode='default')
+# These were previously assigned via prompt_lib_moderators custom role
+INSERT INTO public.auth_core__role_permission (role_id, permission)
+SELECT r.id, p.perm
+FROM public.auth_core__role r
+CROSS JOIN (VALUES
+    ('models.promptlib_shared.approve_collection.post'),
+    ('models.promptlib_shared.reject_collection.delete')
+) AS p(perm)
+WHERE r.name = 'editor' AND r.mode = 'default'
+AND NOT EXISTS (
+    SELECT 1 FROM public.auth_core__role_permission rp
+    WHERE rp.role_id = r.id AND rp.permission = p.perm
+);
+
+# Step 3: Migrate public project user assignments from custom roles to standard roles
+# Find the public project ID from vault secrets (ai_project_id).
+# The queries below use a subquery pattern to find the public project.
+# If your public project ID is known (e.g., 1), you can hardcode it.
+#
+# 3a: Users with prompt_lib_public -> ensure they have viewer
+INSERT INTO public.auth_core__project_user_role (project_id, user_id, role_id)
+SELECT pur.project_id, pur.user_id, viewer_role.id
+FROM public.auth_core__project_user_role pur
+JOIN public.auth_core__project_role custom_role
+    ON pur.role_id = custom_role.id AND pur.project_id = custom_role.project_id
+JOIN public.auth_core__project_role viewer_role
+    ON viewer_role.project_id = pur.project_id AND viewer_role.name = 'viewer'
+WHERE custom_role.name = 'prompt_lib_public'
+AND NOT EXISTS (
+    SELECT 1 FROM public.auth_core__project_user_role existing
+    WHERE existing.project_id = pur.project_id
+    AND existing.user_id = pur.user_id
+    AND existing.role_id = viewer_role.id
+);
+
+# 3b: Users with public_admin -> ensure they have admin
+INSERT INTO public.auth_core__project_user_role (project_id, user_id, role_id)
+SELECT pur.project_id, pur.user_id, admin_role.id
+FROM public.auth_core__project_user_role pur
+JOIN public.auth_core__project_role custom_role
+    ON pur.role_id = custom_role.id AND pur.project_id = custom_role.project_id
+JOIN public.auth_core__project_role admin_role
+    ON admin_role.project_id = pur.project_id AND admin_role.name = 'admin'
+WHERE custom_role.name = 'public_admin'
+AND NOT EXISTS (
+    SELECT 1 FROM public.auth_core__project_user_role existing
+    WHERE existing.project_id = pur.project_id
+    AND existing.user_id = pur.user_id
+    AND existing.role_id = admin_role.id
+);
+
+# 3c: Users with prompt_lib_moderators -> ensure they have editor
+INSERT INTO public.auth_core__project_user_role (project_id, user_id, role_id)
+SELECT pur.project_id, pur.user_id, editor_role.id
+FROM public.auth_core__project_user_role pur
+JOIN public.auth_core__project_role custom_role
+    ON pur.role_id = custom_role.id AND pur.project_id = custom_role.project_id
+JOIN public.auth_core__project_role editor_role
+    ON editor_role.project_id = pur.project_id AND editor_role.name = 'editor'
+WHERE custom_role.name = 'prompt_lib_moderators'
+AND NOT EXISTS (
+    SELECT 1 FROM public.auth_core__project_user_role existing
+    WHERE existing.project_id = pur.project_id
+    AND existing.user_id = pur.user_id
+    AND existing.role_id = editor_role.id
+);
+
+# 3d: Users with monitor -> ensure they have viewer (monitor is folded into viewer)
+INSERT INTO public.auth_core__project_user_role (project_id, user_id, role_id)
+SELECT pur.project_id, pur.user_id, viewer_role.id
+FROM public.auth_core__project_user_role pur
+JOIN public.auth_core__project_role custom_role
+    ON pur.role_id = custom_role.id AND pur.project_id = custom_role.project_id
+JOIN public.auth_core__project_role viewer_role
+    ON viewer_role.project_id = pur.project_id AND viewer_role.name = 'viewer'
+WHERE custom_role.name = 'monitor'
+AND NOT EXISTS (
+    SELECT 1 FROM public.auth_core__project_user_role existing
+    WHERE existing.project_id = pur.project_id
+    AND existing.user_id = pur.user_id
+    AND existing.role_id = viewer_role.id
+);
+
+# 3e: Remove custom role user assignments (including monitor)
+DELETE FROM public.auth_core__project_user_role
+WHERE role_id IN (
+    SELECT id FROM public.auth_core__project_role
+    WHERE name IN ('prompt_lib_public', 'prompt_lib_moderators', 'public_admin', 'monitor')
+);
+
+# Step 4: Delete corrupted and custom role entries from project_role
+# Corrupted entries are debug strings accidentally inserted as role names.
+# Custom public roles (including monitor) are replaced by standard roles above.
+DELETE FROM public.auth_core__project_role
+WHERE name NOT IN ('admin', 'editor', 'viewer', 'system', 'Executor');
+
+# Step 5: Remove monitor role from central table (folded into viewer)
+DELETE FROM public.auth_core__role_permission
+WHERE role_id IN (SELECT id FROM public.auth_core__role WHERE name = 'monitor' AND mode = 'default');
+
+DELETE FROM public.auth_core__role WHERE name = 'monitor' AND mode = 'default';
+
+# Step 6: Truncate dead project_role_permission table
+# This table was written during project creation but never read at runtime.
+# The permission resolver reads from central auth_core__role_permission.
+TRUNCATE TABLE public.auth_core__project_role_permission;
+
+# Step 7: Reclaim disk space (~2 GB)
+VACUUM FULL public.auth_core__project_role_permission;

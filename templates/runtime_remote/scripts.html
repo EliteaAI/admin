@@ -1,0 +1,210 @@
+<div class="container-fluid">
+
+        <div class="card mt-3 card-table-sm">
+            <div class="card-header">
+                <div class="row">
+                    <div class="col-2">
+                        <h4>Manual</h4>
+                    </div>
+                    <div class="col-8 form-group">
+                        <input type="text" id="ipt-manual" class="form-control form-control-alternative"
+                               placeholder="pylon-id-1:plugin_1,plugin_2;pylon-id-2:plugin_3">
+                    </div>
+                    <div class="col-2">
+                        <div class="d-flex justify-content-end">
+                            <button id="btn-manual" type="button" class="btn btn-secondary btn-sm mr-2"><i class="fas fa-arrow-circle-down"></i> &nbsp; Manual apply</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-2">
+                        <h4>Plugins</h4>
+                    </div>
+                    <div class="col-8">
+                    </div>
+                    <div class="col-2">
+                        <div class="d-flex justify-content-end">
+                            <button id="btn-update" type="button" class="btn btn-secondary btn-sm mr-2">
+                              <i class="fas fa-arrow-circle-down"></i> &nbsp; Update selected
+                            </button>
+                            <button id="btn-update-with-reqs" type="button" class="btn btn-secondary btn-sm mr-2">
+                              <i class="fas fa-arrow-circle-down"></i> &nbsp; Update selected (purge requirements)
+                            </button>
+                            <button id="btn-purge-reqs" type="button" class="btn btn-secondary btn-sm mr-2">
+                              <i class="fas fa-arrow-circle-down"></i> &nbsp; Purge selected requirements
+                            </button>
+                            <button id="btn-delete" type="button" class="btn btn-secondary btn-sm mr-2">
+                              <i class="fas fa-arrow-circle-down"></i> &nbsp; Delete selected
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="row mt-3">
+                    <div class="col-2">
+                        <h4>Configs</h4>
+                    </div>
+                    <div class="col-8">
+                    </div>
+                    <div class="col-2">
+                        <div class="d-flex justify-content-end">
+                            <button id="btn-export-configs" type="button" class="btn btn-secondary btn-sm mr-2">
+                              <i class="fas fa-arrow-circle-down"></i> &nbsp; Export selected configs
+                            </button>
+                            <button id="btn-import-configs" type="button" class="btn btn-secondary btn-sm mr-2">
+                              <i class="fas fa-arrow-circle-down"></i> &nbsp; Import configs
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                {% if reload_enabled %}
+                <div class="row mt-3">
+                    <div class="col-2">
+                        <h4>Reload</h4>
+                    </div>
+                    <div class="col-8">
+                    </div>
+                    <div class="col-2">
+                        <div class="d-flex justify-content-end">
+                            <button id="btn-reload" type="button" class="btn btn-secondary btn-sm mr-2"><i class="fas fa-sync"></i> &nbsp; Reload selected</button>
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
+                <div class="row mt-3">
+                    <div class="col-2">
+                        <h4>Remote</h4>
+                    </div>
+                    <div class="col-8">
+                    </div>
+                    <div class="col-2">
+                        <div class="d-flex justify-content-end">
+                          <button type="button" class="btn btn-32 btn-secondary" id="refresh-table">
+                            <i class="fas fa-refresh"></i>
+                          </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="card-body">
+                <table class="table table-borderless"
+                    id="table"
+                    data-toggle="table"
+                    data-url="{{ tools.context.url_prefix }}/api/v1/admin/runtime_remote/administration"
+                    data-pagination="false"
+                    data-click-to-select="false"
+                  >
+
+                    <thead class="thead-light">
+                        <tr>
+                            <th scope="col" data-field="state" data-checkbox="true"></th>
+                            <th scope="col" data-sortable="true" data-cell-style="nameStyle" data-width="500" data-field="pylon_id">Pylon</th>
+                            <th scope="col" data-sortable="true" data-cell-style="nameStyle" data-field="name">Name</th>
+                            <th scope="col" data-sortable="true" data-cell-style="nameStyle" data-field="description">Description</th>
+                            <th scope="col" data-sortable="true" data-cell-style="nameStyle" data-width="50" data-field="prepared">Prepared</th>
+                            <th scope="col" data-sortable="true" data-cell-style="nameStyle" data-width="50" data-field="activated">Activated</th>
+                            <th scope="col" data-sortable="true" data-cell-style="nameStyle" data-width="50" data-field="local_version">Local version</th>
+                            <th scope="col" data-sortable="true" data-cell-style="nameStyle" data-width="50" data-field="repo_version">Repo version</th>
+                            <th scope="col" data-align="right" data-cell-style="cellStyle" data-formatter="editConfigActionsFormatter" data-events="editConfigActionsEvents">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+</div>
+
+<form id="form-export-configs" style="display: none;" method="post" action="{{ tools.context.url_prefix }}/api/v1/admin/runtime_remote/administration" target="_blank">
+  <input type="hidden" id="form-export-configs-data" name="data" value="">
+  <input type="hidden" name="action" value="export_configs">
+</form>
+
+<script src="{{ url_for('admin.static', filename='js/vendor/jquery.serialize-object.min.js') }}"></script>
+<script src="{{ url_for('admin.static', filename='js/vendor/axios.min.js') }}"></script>
+
+<div id="modal-edit-config" class="modal modal-small fixed-left fade shadow-sm" tabindex="-1" role="dialog">
+  <div class="modal-dialog modal-dialog-aside" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Edit config: <span id="modal-edit-plugin"></span></h5>
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <div class="modal-body">
+
+        <div class="row">
+
+          <div class="col">
+
+            <form id="form-edit-config">
+              <div class="form-group">
+                <label for="input-cfg-edit">Config</label>
+                <textarea class="col-12" rows="20" id="input-cfg-edit" name="cfg_edit"></textarea>
+              </div>
+            </form>
+
+          </div> <!-- col -->
+        </div> <!-- row -->
+
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" id="btn-cfg-load">Load (merged)</button>
+        <button type="button" class="btn btn-secondary" id="btn-cfg-load-raw">Load (raw)</button>
+        <button type="button" class="btn btn-secondary" id="btn-cfg-save">Save</button>
+        <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div> <!-- modal -->
+
+<style>
+.th-dark {
+  input[type=file] {
+    color: #f3f3f3;
+  }
+}
+</style>
+
+<div id="modal-import-config" class="modal modal-small fixed-left fade shadow-sm" tabindex="-1" role="dialog">
+  <div class="modal-dialog modal-dialog-aside" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Import config</h5>
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <div class="modal-body">
+
+        <div class="row">
+
+          <div class="col">
+
+            <form id="form-import-config">
+              <div class="form-group">
+                <label for="input-cfg-import">Config ZIP</label>
+                <input type="file" id="input-cfg-import" name="cfg_zip">
+              </div>
+            </form>
+
+          </div> <!-- col -->
+        </div> <!-- row -->
+
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" id="btn-cfg-import">Import</button>
+        <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div> <!-- modal -->
+
+<script>
+  var remote_api_url = "{{ tools.context.url_prefix }}/api/v1/admin/runtime_remote/administration";
+  var remote_edit_api_url = "{{ tools.context.url_prefix }}/api/v1/admin/runtime_remote_config/administration";
+  var edit_config_row = {};
+</script>
+
+<script src="{{ url_for('admin.static', filename='js/runtime_remote.js') }}"></script>

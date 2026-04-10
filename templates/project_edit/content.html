@@ -1,0 +1,84 @@
+<div class="d-flex">
+
+  <div class="card card-x card-table">
+      <div class="card-header">
+          <div class="row">
+              <div class="col-4">
+                  <h3>Users</h3>
+              </div>
+              <div class="col-8">
+                  <div class="d-flex justify-content-end">
+                      <button type="button" class="btn btn-32 btn-secondary" data-toggle="modal" data-target="#userAddModal"><i class="fas fa-plus"></i></button>
+                  </div>
+              </div>
+          </div>
+
+      </div>
+      <div class="card-body">
+          <table
+            class="table table-border"
+            id="project-users-list"
+              data-toggle="table"
+              data-unique-id="id"
+              data-pagination="false"
+              data-url="{{ tools.context.url_prefix }}/api/v1/admin/users/administration/{{ project }}/">
+              <thead class="thead-light">
+                  <tr>
+                      <th data-visible="true" data-sortable="true" data-field="id">ID</th>
+                      <th scope="col" data-sortable="true" data-cell-style="nameStyle" data-field="email">Email</th>
+                      <th scope="col" data-sortable="true" data-cell-style="nameStyle" data-field="name">Name</th>
+                      <th scope="col" data-sortable="true" data-cell-style="nameStyle" data-field="roles">Roles</th>
+                  </tr>
+              </thead>
+              <tbody>
+              </tbody>
+          </table>
+
+          <br>
+      </div>
+  </div>
+
+</div>
+
+<div class="modal modal-small fixed-left fade shadow-sm" tabindex="-1" role="dialog" id="userAddModal">
+    <div class="modal-dialog modal-dialog-aside" role="document">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div class="row w-100">
+                    <div class="col">
+                        <h2>Add user to project</h2>
+                    </div>
+                    <div class="col-xs">
+                        <button type="button" class="btn  btn-secondary" data-dismiss="modal" aria-label="Close">
+                            Cancel
+                        </button>
+                        &nbsp;
+                        <button type="button" id="project_user_submit" class="btn btn-basic">Add</button>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-body">
+                <div class="section">
+                    <div class="row">
+                        <div class="form-group col">
+                            <h9>User Name (email)</h9>
+                            <p>
+                                <h13>Enter user name (email)</h13>
+                            </p>
+                            <input type="text" id="user_name" class="form-control form-control-alternative" placeholder="User Name (email)">
+                            <div class="invalid-feedback"></div>
+                        </div>
+                        <div class="form-group col">
+                            <h9>User Role</h9>
+                            <p>
+                                <h13>Enter user role</h13>
+                            </p>
+                            <input type="text" id="user_role" class="form-control form-control-alternative" placeholder="User Role">
+                            <div class="invalid-feedback"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://elitea.ai/admin-config-schema/v1",
+  "plugin": "admin",
+  "properties": {
+    "reload_enabled": {
+      "type": "boolean",
+      "title": "Plugin Hot Reload",
+      "description": "Allows reloading individual plugins on the fly without a full service restart. Useful during development or when applying plugin updates. Keep disabled in production to avoid unexpected behavior.",
+      "path": "reload_enabled",
+      "section": "runtime",
+      "default": false,
+      "requires_restart": false
+    }
+  }
+}

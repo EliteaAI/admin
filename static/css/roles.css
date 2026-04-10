@@ -1,0 +1,35 @@
+.table-hover tbody tr:hover .btn-hidden {
+    display: block !important;
+}
+.min-w-60 {
+    min-width: 60px;
+}
+.min-w-100 {
+    min-width: 100px;
+}
+.bootstrap-table .fixed-table-container .table thead th .both {
+    background-image: none !important;
+}
+.bootstrap-table .fixed-table-container .table thead th .asc {
+    background-image: none !important;
+}
+
+.bootstrap-table .fixed-table-container .table thead th .desc {
+    background-image: none !important;
+}
+
+/*.fixed-columns-right {*/
+/*    border-left: solid 1px var(--lines);*/
+/*}*/
+/*.fixed-columns {*/
+/*    border-right: solid 1px var(--lines);*/
+/*}*/
+.th-inner .icon__18x18:hover {
+    background: var(--basic);
+}
+.thead-light .th-inner:hover .icon__18x18 {
+    display: block !important;
+}
+.table-hover tbody tr.empty-row__error {
+    background-color: var(--card-red);
+}

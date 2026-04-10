@@ -1,0 +1,8 @@
+<Users-Page
+    instance_name="UsersPage"
+    @register="register"
+>
+    <template #invitation_integration>
+        {{ template_slot('users_email_invitation_content', payload={'project_id': tools.session_project.get()}) | safe }}
+    </template>
+</Users-Page>

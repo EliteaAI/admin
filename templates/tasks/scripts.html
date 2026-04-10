@@ -1,0 +1,114 @@
+<div class="container-fluid">
+
+  <div class="card mt-3">
+      <div class="card-header">
+          <div class="row">
+              <div class="col-2">
+                  <h4>Tasks</h4>
+              </div>
+              <div class="col-8 form-group">
+                  <select id="task-selector" class="selectpicker" data-style="btn">
+                      {% for item in tasks %}
+                      <option>{{ item }}</option>
+                      {% endfor %}
+                  </select>
+                  <input type="text" id="task-param" class="form-control form-control-alternative">
+              </div>
+              <div class="col-2">
+                  <div class="d-flex justify-content-end">
+                      <button id="btn-start-task" type="button" class="btn btn-secondary btn-sm mr-2"><i class="fas fa-arrow-circle-down"></i> &nbsp; Start task</button>
+                  </div>
+              </div>
+          </div>
+      </div>
+      <div class="card-body">
+      </div>
+  </div>
+
+  <div class="card mt-3 card-table-sm">
+      <div class="card-header">
+          <div class="row">
+              <div class="col-2">
+                  <h4>Tasks</h4>
+              </div>
+              <div class="col-8">
+              </div>
+              <div class="col-2">
+                  <div class="d-flex justify-content-end">
+                    <button type="button" class="btn btn-32 btn-secondary refresh-table-button" data-target="#table-task">
+                      <i class="fas fa-refresh"></i>
+                    </button>
+                  </div>
+              </div>
+          </div>
+      </div>
+      <div class="card-body">
+          <table class="table table-borderless"
+              id="table-task"
+              data-toggle="table"
+              data-url="{{ tools.context.url_prefix }}/api/v1/admin/tasks/administration/?scope=task"
+              data-pagination="false"
+              data-click-to-select="false"
+            >
+              <thead class="thead-light">
+                  <tr>
+                      <th scope="col" data-sortable="true" data-field="task_id">Task ID</th>
+                      <th scope="col" data-sortable="true" data-field="requestor">Requestor</th>
+                      <th scope="col" data-sortable="true" data-field="runner">Runner</th>
+                      <th scope="col" data-sortable="true" data-field="status">Status</th>
+                      <th scope="col" data-sortable="true" data-field="meta">Meta</th>
+                      <th scope="col" data-visible="false" data-field="node">Node</th>
+                      <th scope="col" data-align="right" data-width="50" data-formatter="actions_formatter" data-events="actions_events">Actions</th>
+                  </tr>
+              </thead>
+              <tbody>
+              </tbody>
+          </table>
+      </div>
+  </div>
+
+</div>
+
+<script src="{{ url_for('admin.static', filename='js/vendor/jquery.serialize-object.min.js') }}"></script>
+<script src="{{ url_for('admin.static', filename='js/vendor/axios.min.js') }}"></script>
+
+<div id="modal-task-logs" class="modal fixed-left fade shadow-sm" tabindex="-1" role="dialog">
+  <div class="modal-dialog modal-dialog-aside" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Logs: <span id="modal-logs-task"></span></h5>
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <div class="modal-body">
+
+        <div class="row">
+
+          <div class="col">
+
+            <form id="form-logs">
+              <div class="form-group">
+                <label for="input-logs">Logs</label>
+                <textarea class="col-12" rows="20" id="input-logs" readonly></textarea>
+              </div>
+            </form>
+
+          </div> <!-- col -->
+        </div> <!-- row -->
+
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div> <!-- modal -->
+
+<script>
+  var tasks_api_url = "{{ tools.context.url_prefix }}/api/v1/admin/tasks/administration/";
+  //
+  var logs_row = {};
+</script>
+
+<script src="{{ url_for('admin.static', filename='js/tasks.js') }}"></script>

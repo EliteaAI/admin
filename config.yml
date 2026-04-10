@@ -1,0 +1,10 @@
+plugins:
+  available:
+  - configuration
+  - performance
+  - security
+  - engagements
+  - models
+  preselected:
+  - 0
+  - 1

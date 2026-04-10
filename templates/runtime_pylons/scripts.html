@@ -1,0 +1,169 @@
+<div class="container-fluid">
+
+        <div class="card mt-3 card-table-sm">
+            <div class="card-header">
+                <div class="row">
+                    <div class="col-2">
+                        <h4>Pylons</h4>
+                    </div>
+                    <div class="col-8">
+                    </div>
+                    <div class="col-2">
+                        <div class="d-flex justify-content-end">
+                          <button type="button" class="btn btn-32 btn-secondary" id="refresh-table">
+                            <i class="fas fa-refresh"></i>
+                          </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="card-body">
+                <table class="table table-borderless"
+                    id="table"
+                    data-toggle="table"
+                    data-url="{{ tools.context.url_prefix }}/api/v1/admin/runtime_pylons/administration"
+                    data-pagination="false"
+                    data-click-to-select="false"
+                  >
+
+                    <thead class="thead-light">
+                        <tr>
+                            <th scope="col" data-sortable="true" data-cell-style="nameStyle" data-width="500" data-field="pylon_id">Pylon</th>
+                            <th scope="col" data-align="right" data-cell-style="cellStyle" data-formatter="pylonsActionsFormatter" data-events="pylonsActionsEvents">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+</div>
+
+<script src="{{ url_for('admin.static', filename='js/vendor/jquery.serialize-object.min.js') }}"></script>
+<script src="{{ url_for('admin.static', filename='js/vendor/axios.min.js') }}"></script>
+
+<div id="modal-pylon-logs" class="modal fixed-left fade shadow-sm" tabindex="-1" role="dialog">
+  <div class="modal-dialog modal-dialog-aside" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Logs: <span id="modal-logs-pylon"></span></h5>
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <div class="modal-body">
+
+        <div class="row">
+
+          <div class="col">
+
+            <form id="form-logs">
+              <div class="form-group">
+                <label for="input-logs">Logs</label>
+                <textarea class="col-12" rows="20" id="input-logs" readonly></textarea>
+              </div>
+            </form>
+
+          </div> <!-- col -->
+        </div> <!-- row -->
+
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" id="btn-load">Load</button>
+        <button type="button" class="btn btn-secondary" id="btn-enable-debug-mode">Enable debug mode</button>
+        <button type="button" class="btn btn-secondary" id="btn-disable-debug-mode">Disable debug mode</button>
+        <button type="button" class="btn btn-secondary" id="btn-enable-profiling">Enable profiling</button>
+        <button type="button" class="btn btn-secondary" id="btn-disable-profiling">Disable profiling</button>
+        <button type="button" class="btn btn-secondary" id="btn-enable-splash">Enable splash</button>
+        <button type="button" class="btn btn-secondary" id="btn-disable-splash">Disable splash</button>
+        <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div> <!-- modal -->
+
+<div id="modal-pylon-config" class="modal fixed-left fade shadow-sm" tabindex="-1" role="dialog">
+  <div class="modal-dialog modal-dialog-aside" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Config: <span id="modal-config-pylon"></span></h5>
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <div class="modal-body">
+
+        <div class="row">
+
+          <div class="col">
+
+            <form id="form-edit-config">
+              <div class="form-group">
+                <label for="input-cfg-edit">Config</label>
+                <textarea class="col-12" rows="20" id="input-cfg-edit" name="cfg_edit"></textarea>
+              </div>
+            </form>
+
+          </div> <!-- col -->
+        </div> <!-- row -->
+
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" id="btn-cfg-load">Load (merged)</button>
+        <button type="button" class="btn btn-secondary" id="btn-cfg-load-raw">Load (raw)</button>
+        <button type="button" class="btn btn-secondary" id="btn-cfg-save">Save</button>
+        <button type="button" class="btn btn-secondary" id="btn-cfg-restart">Restart</button>
+        <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div> <!-- modal -->
+
+<div id="modal-pylon-splash" class="modal fixed-left fade shadow-sm" tabindex="-1" role="dialog">
+  <div class="modal-dialog modal-dialog-aside" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Splash: <span id="modal-splash-pylon"></span></h5>
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <div class="modal-body">
+
+        <div class="row">
+
+          <div class="col">
+
+            <form id="form-edit-splash">
+              <div class="form-group">
+                <label for="input-splash-edit">Splash</label>
+                <textarea class="col-12" rows="20" id="input-splash-edit" name="cfg_edit"></textarea>
+              </div>
+            </form>
+
+          </div> <!-- col -->
+        </div> <!-- row -->
+
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" id="btn-splash-load">Load</button>
+        <button type="button" class="btn btn-secondary" id="btn-splash-save">Save</button>
+        <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div> <!-- modal -->
+
+<script>
+  var logs_api_url = "{{ tools.context.url_prefix }}/api/v1/admin/runtime_pylons/administration";
+  var logs_row = {};
+  //
+  var config_api_url = "{{ tools.context.url_prefix }}/api/v1/admin/runtime_pylons_config/administration";
+  var config_row = {};
+  //
+  var splash_api_url = "{{ tools.context.url_prefix }}/api/v1/admin/runtime_pylons_splash/administration";
+  var splash_row = {};
+</script>
+
+<script src="{{ url_for('admin.static', filename='js/runtime_pylons.js') }}"></script>

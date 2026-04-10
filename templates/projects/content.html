@@ -1,0 +1,301 @@
+<div class="d-flex">
+
+    <div class="card card-x card-table">
+        <div class="card-header">
+            <div class="row">
+                <div class="col-4">
+                    <h3>Projects</h3>
+                </div>
+                <div class="col-8">
+                    <div class="d-flex justify-content-end">
+                        <button type="button" class="btn btn-32 btn-secondary" data-toggle="modal"
+                                data-target="#projectCreateModal"><i class="fas fa-plus"></i></button>
+                        <button type="button" class="btn btn-32 btn-secondary" data-toggle="modal"
+                                data-target="#userInviteModal"><i class="fas fa-envelope"></i></button>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+        <div class="card-body">
+            <table
+                    class="table table-border"
+                    id="projects-list"
+                    data-toggle="table"
+                    data-unique-id="id"
+                    data-pagination="false"
+                    :data-url="build_api_url('admin', 'projects')"
+            >
+                <thead class="thead-light">
+                <tr>
+                    <th data-visible="true" data-sortable="true" data-field="id">ID</th>
+                    <th scope="col" data-sortable="true" data-cell-style="nameStyle" data-field="project_name">Project Name</th>
+                    <th scope="col" data-sortable="true" data-cell-style="nameStyle" data-field="admin_name">Admin Name</th>
+                    <th scope="col" data-align="right" data-cell-style="cellStyle"
+                        data-formatter="projectActionFormatter">Actions
+                    </th>
+                </tr>
+                </thead>
+                <tbody>
+                </tbody>
+            </table>
+
+            <br>
+        </div>
+    </div>
+
+</div>
+
+<div class="modal modal-small fixed-left fade shadow-sm" tabindex="-1" role="dialog" id="projectCreateModal">
+    <div class="modal-dialog modal-dialog-aside" role="document">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div class="row w-100">
+                    <div class="col">
+                        <h2>Create project</h2>
+                    </div>
+                    <div class="col-xs">
+                        <button type="button" class="btn  btn-secondary" data-dismiss="modal" aria-label="Close">
+                            Cancel
+                        </button>
+                        &nbsp;
+                        <button type="button" id="project_submit" class="btn btn-basic">Create</button>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-body">
+                <div>
+                    <div class="row">
+                        <div class="form-group col">
+                            <p class="font-h5 font-semibold">Project Name</p>
+                            <p class="font-h6 font-weight-400 mb-1">Enter project name</p>
+                            <input type="text" id="name" class="form-control form-control-alternative"
+                                   placeholder="Project Name">
+                            <div class="invalid-feedback"></div>
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="form-group col">
+                            <p class="font-h5 font-semibold">Assign project admin</p>
+                            <p class="font-h6 font-weight-400 mb-1">Enter email</p>
+                            <input type="text" id="project_admin_email" class="form-control form-control-alternative"
+                                   placeholder="Email" :value="user.email">
+                            <div class="invalid-feedback"></div>
+                        </div>
+                    </div>
+
+                    {{ template_slot('administration_email_invitation_content') | safe }}
+
+                    <div>
+                        <p class="font-h5 font-semibold mb-1">Select plugins for project</p>
+                        <Multiselect-Dropdown
+                            @register="register"
+                            placeholder="Select Plugins"
+                            instance_name="plugin_selector"
+                            container_class="bootstrap-select__b displacement-left-4"
+                            :list_items='{{ plugins_available | safe }}'
+                            :pre_selected_indexes='{{ plugins_preselected | safe }}'
+                            v-model="custom_data.plugins"
+                            :has-search="true"
+                        ></Multiselect-Dropdown>
+                    </div>
+
+
+                    <div>
+                        <div class="mt-4 mb-4 d-flex">
+                            <p class="font-h5 font-semibold flex-grow-1">Limit settings</p>
+                            <label class="custom-toggle">
+                                <input type="checkbox"
+                                    id="limit_settings"
+                                    data-target="#selector_limit_settings"
+                                    aria-expanded="limit_settings"
+                                    data-toggle="collapse"
+                                >
+                                <span class="custom-toggle_slider round"></span>
+                            </label>
+                        </div>
+                        <div class="mb-2 collapse" :class="{ show: limit_settings }" id="selector_limit_settings">
+                            <p class="font-h5 font-semibold flex-grow-1 mb-2">Virtual compute units limit settings</p>
+                            <div class="row">
+                                <div class="col mb-2 align-items-center">
+                                    <div class="font-h6 font-semibold" style="white-space: nowrap">Hard limit, VCU</div>
+                                    <input type="number" class="form-control mt-1" placeholder="VCU hard limit"
+                                           id="vcu_hard_limit"
+                                    >
+                                </div>
+
+                                <div class="col mb-2 align-items-center">
+                                    <div class="font-h6 font-semibold" style="white-space: nowrap">Soft limit, VCU</div>
+                                    <input type="number" class="form-control mt-1" placeholder="VCU soft limit"
+                                           id="vcu_soft_limit"
+                                    >
+                                </div>
+                            </div>
+
+                            <div class="row">
+                                <div class="col mb-1 align-items-center">
+                                    <input
+                                        id="vcu_limit_total_block_false"
+                                        name="vcu_limit_total_block"
+                                        checked
+                                        class="mx-2 custom-radio"
+                                        type="radio"
+                                        value="false"
+                                        >
+                                    <label
+                                        class="mb-0"
+                                        for="vcu_limit_total_block_false">
+                                        <h9 class="font-h6 font-semibold">
+                                        Block platform resources only
+                                        </h9>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col mb-3 align-items-center">
+                                    <input
+                                        id="vcu_limit_total_block_true"
+                                        name="vcu_limit_total_block"
+                                        class="mx-2 custom-radio"
+                                        type="radio"
+                                        value="true"
+                                        >
+                                    <label
+                                        class="mb-0"
+                                        for="vcu_limit_total_block_true">
+                                        <h9 class="font-h6 font-semibold">
+                                        Total block
+                                        </h9>
+                                    </label>
+                                </div>
+                            </div>
+
+                            <p class="font-h5 font-semibold flex-grow-1 mb-2">Storage limit settings</p>
+                            <div class="row">
+                                <div class="col mb-2 align-items-center">
+                                    <div class="font-h6 font-semibold" style="white-space: nowrap">Hard limit, GB</div>
+                                    <input type="number" class="form-control mt-1" placeholder="Storage hard limit"
+                                           id="storage_hard_limit"
+                                    >
+                                </div>
+
+                                <div class="col mb-2 align-items-center">
+                                    <div class="font-h6 font-semibold" style="white-space: nowrap">Soft limit, GB</div>
+                                    <input type="number" class="form-control mt-1" placeholder="Storage soft limit"
+                                           id="storage_soft_limit"
+                                    >
+                                </div>
+                            </div>
+
+                            <div class="row">
+                                <div class="col mb-1 align-items-center">
+                                    <input
+                                        id="storage_limit_total_block_false"
+                                        name="storage_limit_total_block"
+                                        checked
+                                        class="mx-2 custom-radio"
+                                        type="radio"
+                                        value="false"
+                                        >
+                                    <label
+                                        class="mb-0"
+                                        for="storage_limit_total_block_false">
+                                        <h9 class="font-h6 font-semibold">
+                                        Block platform resources only
+                                        </h9>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col mb-3 align-items-center">
+                                    <input
+                                        id="storage_limit_total_block_true"
+                                        name="storage_limit_total_block"
+                                        class="mx-2 custom-radio"
+                                        type="radio"
+                                        value="true"
+                                        >
+                                    <label
+                                        class="mb-0"
+                                        for="storage_limit_total_block_true">
+                                        <h9 class="font-h6 font-semibold">
+                                        Total block
+                                        </h9>
+                                    </label>
+                                </div>
+                            </div>
+                            <p class="font-h5 font-semibold flex-grow-1 mb-2">Performance test limits</p>
+                            <div class="row">
+                                <div class="col mb-2 align-items-center">
+                                    <div class="font-h6 font-semibold" style="white-space: nowrap">CPU limit</div>
+                                    <input type="number" class="form-control mt-1" placeholder="CPU limit"
+                                           id="cpu_limit"
+                                    >
+                                </div>
+
+                                <div class="col mb-2 align-items-center">
+                                    <div class="font-h6 font-semibold" style="white-space: nowrap">Memory limit, GB</div>
+                                    <input type="number" class="form-control mt-1" placeholder="Memory limit"
+                                           id="memory_limit"
+                                    >
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col mb-2 align-items-center">
+                                    <div class="font-h6 font-semibold" style="white-space: nowrap">Test duration, sec</div>
+                                    <input type="number" class="form-control mt-1" placeholder="Test duration limit"
+                                           id="test_duration_limit"
+                                    >
+                                </div>
+                            </div>
+
+
+                        </div>
+
+                    </div>
+
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal modal-small fixed-left fade shadow-sm" tabindex="-1" role="dialog" id="userInviteModal">
+    <div class="modal-dialog modal-dialog-aside" role="document">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div class="row w-100">
+                    <div class="col">
+                        <h2>Invite user</h2>
+                    </div>
+                    <div class="col-xs">
+                        <button type="button" class="btn  btn-secondary" data-dismiss="modal" aria-label="Close">
+                            Cancel
+                        </button>
+                        &nbsp;
+                        <button type="button" id="invite_submit" class="btn btn-basic">Invite</button>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-body">
+                <div>
+                    <div class="row">
+                        <div class="form-group col">
+                            <p class="font-h5 font-semibold">User Name</p>
+                            <p class="font-h6 font-weight-400 mb-1">Enter user name</p>
+                            <input type="text" id="user_name" class="form-control form-control-alternative" placeholder="User Name">
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="form-group col">
+                            <p class="font-h5 font-semibold">User Email</p>
+                            <p class="font-h6 font-weight-400 mb-1">Enter user email</p>
+                            <input type="text" id="user_email" class="form-control form-control-alternative" placeholder="user@e.mail">
+                        </div>
+                    </div>
+                </div>
+            </div> <!-- modal-body -->
+        </div>
+    </div>
+</div>

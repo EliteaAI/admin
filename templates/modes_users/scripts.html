@@ -1,0 +1,65 @@
+<div class="container-fluid">
+
+        <div class="card mt-3 card-table-sm">
+            <div class="card-header">
+                <div class="row">
+                    <div class="col-4">
+                        <h4>Users</h4>
+                    </div>
+                    <div class="col-8">
+                        <div class="d-flex justify-content-end">
+                            <button id="btn-plus" type="button" class="btn btn-secondary btn-sm btn-icon__sm mr-2" data-toggle="modal" data-target="#modal-create"><i class="fas fa-plus"></i></button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="card-body">
+                <table class="table table-borderless"
+                    id="table"
+                    data-toggle="table"
+                    data-url="{{ tools.context.url_prefix }}/api/v1/admin/modes/administration"
+                    data-unique-id="id"
+                    data-pagination="false"
+                  >
+
+                  <!-- data-pagination-pre-text="<img src='{{ tools.context.url_prefix }}/design-system/static/assets/ico/arrow_left.svg'>" -->
+                  <!-- data-pagination-next-text="<img src='{{ tools.context.url_prefix }}/design-system/static/assets/ico/arrow_right.svg'>" -->
+
+                  <!-- data-page-size=5 -->
+                  <!-- data-page-list="[5, 10, 15]" -->
+
+                  <!-- data-side-pagination="server" -->
+                  <!-- data-page-list="[10, 25, 50, 100, all]" -->
+                  <!-- data-toolbar="#toolbar" -->
+
+                    <thead class="thead-light">
+                        <tr>
+                            <th data-visible="false" data-field="id">ID</th>
+                            <th scope="col" data-sortable="true" data-cell-style="nameStyle" data-field="user_id">User ID</th>
+                            <th scope="col" data-sortable="true" data-cell-style="nameStyle" data-field="user_email">User email</th>
+                            <th scope="col" data-sortable="true" data-cell-style="nameStyle" data-field="user_name">User name</th>
+                            <th scope="col" data-sortable="true" data-cell-style="nameStyle" data-field="mode">Mode</th>
+                            <th scope="col" data-sortable="true" data-cell-style="nameStyle" data-field="role">Role</th>
+                            <th scope="col" data-align="right" data-cell-style="cellStyle" data-formatter="actionsFormatter" data-events="actionsEvents">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+</div>
+
+
+
+<script src="{{ url_for('admin.static', filename='js/vendor/jquery.serialize-object.min.js') }}"></script>
+<script src="{{ url_for('admin.static', filename='js/vendor/axios.min.js') }}"></script>
+
+{% include "admin:modes_users/modal_create.html" %}
+
+<script>
+  var api_url = "{{ tools.context.url_prefix }}/api/v1/admin/modes/administration";
+</script>
+
+<script src="{{ url_for('admin.static', filename='js/modes.js') }}"></script>

@@ -1,0 +1,41 @@
+<div id="modal-create" class="modal modal-small fixed-left fade shadow-sm" tabindex="-1" role="dialog">
+  <div class="modal-dialog modal-dialog-aside" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Assign user mode role</h5>
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <div class="modal-body">
+
+        <div class="row">
+
+          <div class="col">
+
+            <form id="form-create">
+              <div class="form-group">
+                <label for="input-user-id">User ID</label>
+                <input type="text" class="form-control" name="user_id" id="input-user-id" placeholder="">
+              </div>
+              <div class="form-group">
+                <label for="input-mode">Mode</label>
+                <input type="text" class="form-control" name="mode" id="input-mode" placeholder="">
+              </div>
+              <div class="form-group">
+                <label for="input-role">Role</label>
+                <input type="text" class="form-control" name="role" id="input-role" placeholder="">
+              </div>
+            </form>
+
+          </div> <!-- col -->
+        </div> <!-- row -->
+
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" id="btn-save">Save</button>
+        <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>

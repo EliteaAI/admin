@@ -1,0 +1,108 @@
+<div class="container-fluid">
+
+  <div class="card mt-3 card-table-sm">
+    <div class="card-header">
+      <div class="row">
+        <div class="col-4">
+          <h4>Permissions</h4>
+        </div>
+        <div class="col-8">
+        </div>
+      </div> <!-- row -->
+    </div>
+    <div class="card-body">
+      <div class="row p-3">
+        <div class="col-4">
+        </div>
+        <div class="col-8">
+          <div class="d-flex justify-content-end">
+            <button id="btn-add-user-project-defaults" type="button" class="btn btn-secondary btn-sm mr-2">
+              <i class="fas fa-arrow-circle-down"></i> &nbsp; Add missing default permissions to user projects
+            </button>
+          </div>
+        </div>
+      </div> <!-- row -->
+      <div class="row p-3">
+        <div class="col-4">
+        </div>
+        <div class="col-8">
+          <div class="d-flex justify-content-end">
+            <button id="btn-add-team-project-defaults" type="button" class="btn btn-secondary btn-sm mr-2">
+              <i class="fas fa-arrow-circle-down"></i> &nbsp; Add missing default permissions to team projects
+            </button>
+          </div>
+        </div>
+      </div> <!-- row -->
+      <div class="row p-3">
+        <div class="col-4">
+          <div class="d-flex">
+            <h5 class="mr-3"><label for="concurrent-tasks">Concurrent tasks</label></h5>
+            <input type="number" class="col" id="concurrent-tasks" value="20"/>
+          </div>
+        </div>
+        <div class="col-8">
+          <div class="d-flex justify-content-end">
+            <button id="btn-add-public-project-defaults" type="button" class="btn btn-secondary btn-sm mr-2">
+              <i class="fas fa-arrow-circle-down"></i> &nbsp; Add missing default permissions to public project
+            </button>
+          </div>
+        </div>
+      </div> <!-- row -->
+      <div class="row p-3">
+        <div class="col-8">
+          <div class="d-flex">
+            <h5 class="mr-3">Manual permissions</h5>
+            <textarea class="col" rows="5" id="textarea-permissions"></textarea>
+          </div>
+        </div>
+        <div class="col-4">
+          <div class="d-flex justify-content-end">
+            <button id="btn-add-user-project-permissions" type="button" class="btn btn-secondary btn-sm mr-2">
+              <i class="fas fa-arrow-circle-down"></i> &nbsp; Add permissions to user projects
+            </button>
+          </div>
+          <div class="mt-1 d-flex justify-content-end">
+            <button id="btn-add-team-project-permissions" type="button" class="btn btn-secondary btn-sm mr-2">
+              <i class="fas fa-arrow-circle-down"></i> &nbsp; Add permissions to team projects
+            </button>
+          </div>
+          <div class="mt-1 d-flex justify-content-end">
+            <button id="btn-add-public-project-permissions" type="button" class="btn btn-secondary btn-sm mr-2">
+              <i class="fas fa-arrow-circle-down"></i> &nbsp; Add permissions to public project
+            </button>
+          </div>
+          <div class="mt-1 d-flex justify-content-end">
+            <button id="btn-delete-user-project-permissions" type="button" class="btn btn-secondary btn-sm mr-2">
+              <i class="fas fa-arrow-circle-down"></i> &nbsp; Delete permissions from user projects
+            </button>
+          </div>
+          <div class="mt-1 d-flex justify-content-end">
+            <button id="btn-delete-team-project-permissions" type="button" class="btn btn-secondary btn-sm mr-2">
+              <i class="fas fa-arrow-circle-down"></i> &nbsp; Delete permissions from team projects
+            </button>
+          </div>
+          <div class="mt-1 d-flex justify-content-end">
+            <button id="btn-delete-public-project-permissions" type="button" class="btn btn-secondary btn-sm mr-2">
+              <i class="fas fa-arrow-circle-down"></i> &nbsp; Delete permissions from public project
+            </button>
+          </div>
+        </div>
+      </div> <!-- row -->
+      <div class="row p-3 m-3">
+        <h5 class="mr-3">Logs</h5>
+        <textarea class="col" rows="15" id="textarea-logs" readonly></textarea>
+      </div> <!-- row -->
+    </div>
+  </div>
+
+</div>
+
+
+<script src="{{ url_for('admin.static', filename='js/vendor/jquery.serialize-object.min.js') }}"></script>
+<script src="{{ url_for('admin.static', filename='js/vendor/axios.min.js') }}"></script>
+
+<script>
+  var migration_permissions_api_url = "{{ tools.context.url_prefix }}/api/v1/admin/migration_permissions/administration";
+</script>
+
+<script src="{{ url_for('admin.static', filename='js/migration_permissions.js') }}"></script>
