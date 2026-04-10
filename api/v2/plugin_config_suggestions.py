@@ -39,6 +39,9 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
             toolkit = flask.request.args.get("toolkit", "")
             return self._get_toolkit_tools(toolkit)
         #
+        if source == "projects":
+            return self._get_projects()
+        #
         return {"error": f"Unknown source: {source}"}, 400
 
     def _get_elitea_core_module(self):
@@ -100,6 +103,32 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         except Exception as e:
             log.warning("Failed to get toolkit tools: %s", e)
             return {"values": []}
+
+    def _get_projects(self):
+        """ Get all project IDs and names for whitelist selection """
+        try:
+            values = []
+            labels = {}
+            offset = 0
+            batch_size = 500
+            while True:
+                data = self.module.context.rpc_manager.call.project_list_paginated(
+                    limit=batch_size, offset=offset,
+                    sort_by="name", sort_order="asc",
+                )
+                rows = data.get("rows", [])
+                if not rows:
+                    break
+                for p in rows:
+                    values.append(p["id"])
+                    labels[str(p["id"])] = f'{p["name"]} (ID: {p["id"]})'
+                if len(rows) < batch_size:
+                    break
+                offset += batch_size
+            return {"values": values, "labels": labels}
+        except Exception as e:
+            log.warning("Failed to get projects: %s", e)
+            return {"values": [], "labels": {}}
 
 
 class API(api_tools.APIBase):  # pylint: disable=R0903
