@@ -91,6 +91,27 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
                     mode="administration",
                 )
         #
+        if action == "toggle_super_admin":
+            if "user_id" not in data:
+                return {"error": "user_id not set"}, 400
+            if "is_super_admin" not in data:
+                return {"error": "is_super_admin not set"}, 400
+            current_permissions = auth.resolve_permissions(mode="administration")
+            if not auth.has_access(current_permissions, ["admin.auth.users.super_admin"]):
+                return {"error": "Only super_admin can assign/revoke super_admin role"}, 403
+            if data["is_super_admin"]:
+                auth.assign_user_to_role(
+                    user_id=data["user_id"],
+                    role_name="super_admin",
+                    mode="administration",
+                )
+            else:
+                auth.remove_user_from_role(
+                    user_id=data["user_id"],
+                    role_name="super_admin",
+                    mode="administration",
+                )
+        #
         return {
             "ok": True,
         }

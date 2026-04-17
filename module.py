@@ -124,6 +124,7 @@ class Module(module.ModuleModel):
         """ Init module """
         log.info("Initializing module")
         from tools import theme  # pylint: disable=E0401,C0415
+        from tools import auth  # pylint: disable=E0401,C0415
         # Run DB migrations
         # db_migrations.run_db_migrations(self, db.url)
         # DB
@@ -170,9 +171,9 @@ class Module(module.ModuleModel):
             permissions={
                 "permissions": ["projects"],
                 "recommended_roles": {
-                    "administration": {"admin": True, "viewer": False, "editor": False},
-                    "default": {"admin": True, "viewer": False, "editor": False},
-                    "developer": {"admin": True, "viewer": False, "editor": False},
+                    "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
                 }},
             # icon_class="fas fa-info-circle fa-fw",
         )
@@ -184,9 +185,9 @@ class Module(module.ModuleModel):
             permissions={
                 "permissions": ["projects.projects"],
                 "recommended_roles": {
-                    "administration": {"admin": True, "viewer": False, "editor": False},
-                    "default": {"admin": True, "viewer": False, "editor": False},
-                    "developer": {"admin": True, "viewer": False, "editor": False},
+                    "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
                 }},
             prefix="admin_mode_projects_",
             # icon_class="fas fa-server fa-fw",
@@ -200,12 +201,14 @@ class Module(module.ModuleModel):
             permissions={
                 "permissions": ["projects.projects"],
                 "recommended_roles": {
-                    "administration": {"admin": True, "viewer": False, "editor": False},
-                    "default": {"admin": True, "viewer": False, "editor": False},
-                    "developer": {"admin": True, "viewer": False, "editor": False},
+                    "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
                 }},
             prefix="admin_mode_projects_edit_",
         )
+        #
+        # Configuration (super_admin only)
         #
         theme.register_mode_section(
             "administration", "configuration", "Configuration",
@@ -214,9 +217,9 @@ class Module(module.ModuleModel):
             permissions={
                 "permissions": ["configuration"],
                 "recommended_roles": {
-                    "administration": {"admin": True, "viewer": True, "editor": True},
-                    "default": {"admin": True, "viewer": True, "editor": True},
-                    "developer": {"admin": True, "viewer": True, "editor": True},
+                    "administration": {"super_admin": True, "admin": True, "viewer": True, "editor": True},
+                    "default": {"super_admin": True, "admin": True, "viewer": True, "editor": True},
+                    "developer": {"super_admin": True, "admin": True, "viewer": True, "editor": True},
                 }},
             # icon_class="fas fa-info-circle fa-fw",
         )
@@ -229,9 +232,9 @@ class Module(module.ModuleModel):
             permissions={
                 "permissions": ["configuration.roles"],
                 "recommended_roles": {
-                    "administration": {"admin": True, "viewer": False, "editor": False},
-                    "default": {"admin": True, "viewer": False, "editor": False},
-                    "developer": {"admin": True, "viewer": False, "editor": False},
+                    "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
                 }},
             prefix="admin_mode_roles_",
             # icon_class="fas fa-server fa-fw",
@@ -245,9 +248,9 @@ class Module(module.ModuleModel):
             permissions={
                 "permissions": ["configuration.roles"],
                 "recommended_roles": {
-                    "administration": {"admin": True, "viewer": False, "editor": False},
-                    "default": {"admin": True, "viewer": False, "editor": False},
-                    "developer": {"admin": True, "viewer": False, "editor": False},
+                    "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
                 }},
             prefix="roles_",
         )
@@ -259,9 +262,9 @@ class Module(module.ModuleModel):
             permissions={
                 "permissions": ["configuration.users"],
                 "recommended_roles": {
-                    "administration": {"admin": True, "viewer": False, "editor": False},
-                    "default": {"admin": True, "viewer": False, "editor": False},
-                    "developer": {"admin": True, "viewer": False, "editor": False},
+                    "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
                 }},
             prefix="users_",
         )
@@ -274,9 +277,9 @@ class Module(module.ModuleModel):
             permissions={
                 "permissions": ["modes"],
                 "recommended_roles": {
-                    "administration": {"admin": True, "viewer": False, "editor": False},
-                    "default": {"admin": True, "viewer": False, "editor": False},
-                    "developer": {"admin": True, "viewer": False, "editor": False},
+                    "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
                 }
             },
             location="left",
@@ -290,16 +293,16 @@ class Module(module.ModuleModel):
             permissions={
                 "permissions": ["modes.users"],
                 "recommended_roles": {
-                    "administration": {"admin": True, "viewer": False, "editor": False},
-                    "default": {"admin": True, "viewer": False, "editor": False},
-                    "developer": {"admin": True, "viewer": False, "editor": False},
+                    "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
                 }
             },
             prefix="admin_modes_users_",
             icon_class="fas fa-server fa-fw",
         )
         #
-        # Runtime
+        # Runtime (super_admin only)
         #
         theme.register_mode_section(
             "administration", "runtime", "Runtime",
@@ -307,9 +310,9 @@ class Module(module.ModuleModel):
             permissions={
                 "permissions": ["runtime"],
                 "recommended_roles": {
-                    "administration": {"admin": True, "viewer": False, "editor": False},
-                    "default": {"admin": True, "viewer": False, "editor": False},
-                    "developer": {"admin": True, "viewer": False, "editor": False},
+                    "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                    "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                    "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
                 }
             },
             location="left",
@@ -339,9 +342,9 @@ class Module(module.ModuleModel):
             permissions={
                 "permissions": ["runtime.plugins"],
                 "recommended_roles": {
-                    "administration": {"admin": True, "viewer": False, "editor": False},
-                    "default": {"admin": True, "viewer": False, "editor": False},
-                    "developer": {"admin": True, "viewer": False, "editor": False},
+                    "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                    "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                    "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
                 }
             },
             prefix="admin_runtime_remote_",
@@ -355,9 +358,9 @@ class Module(module.ModuleModel):
             permissions={
                 "permissions": ["runtime.plugins"],
                 "recommended_roles": {
-                    "administration": {"admin": True, "viewer": False, "editor": False},
-                    "default": {"admin": True, "viewer": False, "editor": False},
-                    "developer": {"admin": True, "viewer": False, "editor": False},
+                    "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                    "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                    "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
                 }
             },
             prefix="admin_runtime_pylons_",
@@ -371,16 +374,16 @@ class Module(module.ModuleModel):
             permissions={
                 "permissions": ["runtime.plugins"],
                 "recommended_roles": {
-                    "administration": {"admin": True, "viewer": False, "editor": False},
-                    "default": {"admin": True, "viewer": False, "editor": False},
-                    "developer": {"admin": True, "viewer": False, "editor": False},
+                    "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                    "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                    "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
                 }
             },
             prefix="admin_runtime_tasknodes_",
             icon_class="fas fa-server fa-fw",
         )
         #
-        # Tasks
+        # Tasks (super_admin only)
         #
         theme.register_mode_section(
             "administration", "tasks", "Tasks",
@@ -388,9 +391,9 @@ class Module(module.ModuleModel):
             permissions={
                 "permissions": ["runtime"],
                 "recommended_roles": {
-                    "administration": {"admin": True, "viewer": False, "editor": False},
-                    "default": {"admin": True, "viewer": False, "editor": False},
-                    "developer": {"admin": True, "viewer": False, "editor": False},
+                    "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                    "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                    "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
                 }
             },
             location="left",
@@ -404,16 +407,16 @@ class Module(module.ModuleModel):
             permissions={
                 "permissions": ["runtime.plugins"],
                 "recommended_roles": {
-                    "administration": {"admin": True, "viewer": False, "editor": False},
-                    "default": {"admin": True, "viewer": False, "editor": False},
-                    "developer": {"admin": True, "viewer": False, "editor": False},
+                    "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                    "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                    "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
                 }
             },
             prefix="admin_tasks_tasks_",
             icon_class="fas fa-server fa-fw",
         )
         #
-        # Migration
+        # Migration (super_admin only)
         #
         theme.register_mode_section(
             "administration", "migration", "Migration",
@@ -421,9 +424,9 @@ class Module(module.ModuleModel):
             permissions={
                 "permissions": ["migration"],
                 "recommended_roles": {
-                    "administration": {"admin": True, "viewer": False, "editor": False},
-                    "default": {"admin": True, "viewer": False, "editor": False},
-                    "developer": {"admin": True, "viewer": False, "editor": False},
+                    "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                    "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                    "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
                 }
             },
             location="left",
@@ -437,9 +440,9 @@ class Module(module.ModuleModel):
             permissions={
                 "permissions": ["migration.db"],
                 "recommended_roles": {
-                    "administration": {"admin": True, "viewer": False, "editor": False},
-                    "default": {"admin": True, "viewer": False, "editor": False},
-                    "developer": {"admin": True, "viewer": False, "editor": False},
+                    "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                    "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                    "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
                 }
             },
             prefix="admin_migration_db_",
@@ -453,9 +456,9 @@ class Module(module.ModuleModel):
             permissions={
                 "permissions": ["migration.permissions"],
                 "recommended_roles": {
-                    "administration": {"admin": True, "viewer": False, "editor": False},
-                    "default": {"admin": True, "viewer": False, "editor": False},
-                    "developer": {"admin": True, "viewer": False, "editor": False},
+                    "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                    "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                    "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
                 }
             },
             prefix="admin_migration_permissions_",
@@ -470,9 +473,9 @@ class Module(module.ModuleModel):
             permissions={
                 "permissions": ["invites"],
                 "recommended_roles": {
-                    "administration": {"admin": True, "viewer": False, "editor": False},
-                    "default": {"admin": True, "viewer": False, "editor": False},
-                    "developer": {"admin": True, "viewer": False, "editor": False},
+                    "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
                 }
             },
             location="left",
@@ -486,9 +489,9 @@ class Module(module.ModuleModel):
             permissions={
                 "permissions": ["invites.platform"],
                 "recommended_roles": {
-                    "administration": {"admin": True, "viewer": False, "editor": False},
-                    "default": {"admin": True, "viewer": False, "editor": False},
-                    "developer": {"admin": True, "viewer": False, "editor": False},
+                    "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
                 }
             },
             prefix="admin_invites_platform_",
@@ -502,9 +505,9 @@ class Module(module.ModuleModel):
             permissions={
                 "permissions": ["invites.bulkusers"],
                 "recommended_roles": {
-                    "administration": {"admin": True, "viewer": False, "editor": False},
-                    "default": {"admin": True, "viewer": False, "editor": False},
-                    "developer": {"admin": True, "viewer": False, "editor": False},
+                    "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
                 }
             },
             prefix="admin_invites_bulkusers_",
@@ -518,9 +521,9 @@ class Module(module.ModuleModel):
             permissions={
                 "permissions": ["invites.bulkprojects"],
                 "recommended_roles": {
-                    "administration": {"admin": True, "viewer": False, "editor": False},
-                    "default": {"admin": True, "viewer": False, "editor": False},
-                    "developer": {"admin": True, "viewer": False, "editor": False},
+                    "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
                 }
             },
             prefix="admin_invites_bulkprojects_",
@@ -535,9 +538,9 @@ class Module(module.ModuleModel):
             permissions={
                 "permissions": ["admin.auth.users"],
                 "recommended_roles": {
-                    "administration": {"admin": True, "viewer": False, "editor": False},
-                    "default": {"admin": True, "viewer": False, "editor": False},
-                    "developer": {"admin": True, "viewer": False, "editor": False},
+                    "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
                 }
             },
             location="left",
@@ -551,14 +554,41 @@ class Module(module.ModuleModel):
             permissions={
                 "permissions": ["admin.auth.users"],
                 "recommended_roles": {
-                    "administration": {"admin": True, "viewer": False, "editor": False},
-                    "default": {"admin": True, "viewer": False, "editor": False},
-                    "developer": {"admin": True, "viewer": False, "editor": False},
+                    "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
                 }
             },
             prefix="admin_auth_users_",
             icon_class="fas fa-server fa-fw",
         )
+        #
+        # Super-admin only permissions
+        #
+        auth.register_permissions({
+            "permissions": ["configuration.advanced"],
+            "recommended_roles": {
+                "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+            }
+        })
+        auth.register_permissions({
+            "permissions": ["configuration.service_descriptors"],
+            "recommended_roles": {
+                "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+            }
+        })
+        auth.register_permissions({
+            "permissions": ["admin.auth.users.super_admin"],
+            "recommended_roles": {
+                "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+            }
+        })
         # Init
         self.descriptor.init_all()
         #

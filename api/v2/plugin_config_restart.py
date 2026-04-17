@@ -28,7 +28,13 @@ from tools import api_tools  # pylint: disable=E0401
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     """ API """
 
-    @auth.decorators.check_api(["runtime.plugins"])
+    @auth.decorators.check_api({
+        "permissions": ["runtime.plugins"],
+        "recommended_roles": {
+            "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+            "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+            "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+        }})
     def post(self, pylon_id):
         """ Reload plugins on a specific pylon """
         request_data = flask.request.get_json() or {}
