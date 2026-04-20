@@ -112,6 +112,50 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
                     mode="administration",
                 )
         #
+        if action == "set_admin_role":
+            if "user_id" not in data:
+                return {"error": "user_id not set"}, 400
+            #
+            user_id = data["user_id"]
+            role_name = data.get("role_name")  # Can be None to remove all admin roles
+            #
+            # Valid administration roles
+            valid_roles = ["super_admin", "admin", "editor", "viewer"]
+            if role_name is not None and role_name not in valid_roles:
+                return {"error": f"Invalid role_name. Must be one of: {valid_roles} or null"}, 400
+            #
+            # Check if current user can assign super_admin
+            current_permissions = auth.resolve_permissions(mode="administration")
+            if role_name == "super_admin":
+                if not auth.has_access(current_permissions, ["admin.auth.users.super_admin"]):
+                    return {"error": "Only super_admin can assign super_admin role"}, 403
+            #
+            # Check if trying to remove super_admin from someone
+            # (need super_admin permission to revoke super_admin)
+            current_user_roles = auth.get_user_roles(user_id, mode="administration")
+            if "super_admin" in current_user_roles and role_name != "super_admin":
+                if not auth.has_access(current_permissions, ["admin.auth.users.super_admin"]):
+                    return {"error": "Only super_admin can revoke super_admin role"}, 403
+            #
+            # Remove user from all administration-mode roles first
+            for role in valid_roles:
+                try:
+                    auth.remove_user_from_role(
+                        user_id=user_id,
+                        role_name=role,
+                        mode="administration",
+                    )
+                except Exception:
+                    pass  # Role might not exist or user might not have it
+            #
+            # Assign the new role if specified
+            if role_name:
+                auth.assign_user_to_role(
+                    user_id=user_id,
+                    role_name=role_name,
+                    mode="administration",
+                )
+        #
         return {
             "ok": True,
         }
