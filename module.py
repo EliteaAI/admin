@@ -589,6 +589,22 @@ class Module(module.ModuleModel):
                 "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
             }
         })
+        auth.register_permissions({
+            "permissions": ["configuration.litellm"],
+            "recommended_roles": {
+                "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
+                "default": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
+                "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
+            }
+        })
+        auth.register_permissions({
+            "permissions": ["configuration.litellm.edit"],
+            "recommended_roles": {
+                "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
+                "default": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
+                "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
+            }
+        })
         # Init
         self.descriptor.init_all()
         #
