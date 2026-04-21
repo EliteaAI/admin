@@ -28,6 +28,8 @@ from pylon.core.tools import log  # pylint: disable=E0611,E0401
 from tools import auth  # pylint: disable=E0401
 from tools import api_tools  # pylint: disable=E0401
 
+from .plugin_config_schemas import SECTION_DEFINITIONS
+
 def get_nested(d, path):
     """ Get a value from a nested dict using dot-notation path """
     keys = path.split(".")
@@ -65,6 +67,13 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     @auth.decorators.check_api(["runtime.plugins"])
     def get(self, section_id):
         """ Read current values for all fields in the given section """
+        #
+        sec_meta = SECTION_DEFINITIONS.get(section_id, {})
+        req_perm = sec_meta.get("required_permission")
+        if req_perm:
+            current_permissions = auth.resolve_permissions(mode="administration")
+            if not auth.has_access(current_permissions, [req_perm]):
+                return {"ok": False, "error": "access_denied"}, 403
         #
         # Pass 1: collect all entries
         raw_entries = []
@@ -135,6 +144,14 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     @auth.decorators.check_api(["runtime.plugins"])
     def put(self, section_id):
         """ Update values for fields in the given section """
+        #
+        sec_meta = SECTION_DEFINITIONS.get(section_id, {})
+        req_perm = sec_meta.get("required_permission")
+        if req_perm:
+            current_permissions = auth.resolve_permissions(mode="administration")
+            if not auth.has_access(current_permissions, [req_perm]):
+                return {"ok": False, "error": "access_denied"}, 403
+        #
         request_data = flask.request.get_json()
         if not request_data:
             return {"error": "No data provided"}, 400

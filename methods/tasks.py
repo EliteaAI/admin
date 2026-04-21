@@ -30,6 +30,7 @@ from ..tasks import db_tasks
 from ..tasks import indexer_tasks
 from ..tasks import project_tasks
 from ..tasks import mesh_tasks
+from ..tasks import role_migration
 
 
 class Method:  # pylint: disable=E1101,R0903
@@ -89,6 +90,8 @@ class Method:  # pylint: disable=E1101,R0903
             ("delete_ghost_users", project_tasks.delete_ghost_users),
             #
             ("mesh_get_plugin_frozen_requirements", mesh_tasks.mesh_get_plugin_frozen_requirements),
+            #
+            ("migrate_admin_to_super_admin", role_migration.migrate_admin_to_super_admin),
         ]
         #
         for task_name, task_func in local_admin_tasks:

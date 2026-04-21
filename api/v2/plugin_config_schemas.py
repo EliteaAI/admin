@@ -70,7 +70,14 @@ SECTION_DEFINITIONS = {
         "icon": "lock",
         "description": "Configure the authentication provider and identity settings.",
     },
-     "dedicated_banner": {
+    "service_descriptors": {
+        "title": "Service Descriptors",
+        "order": 8,
+        "icon": "settings_input_component",
+        "description": "Manage service descriptors for external provider integrations.",
+        "required_permission": "configuration.service_descriptors",
+    },
+    "dedicated_banner": {
         "title": "Banner",
         "order": 89,
         "icon": "campaign",
@@ -90,6 +97,7 @@ SECTION_DEFINITIONS = {
         "icon": "code",
         "description": "View and edit raw plugin configurations for all connected pylons.",
         "always_visible": True,
+        "required_permission": "configuration.advanced",
     },
 }
 
@@ -100,6 +108,7 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     @auth.decorators.check_api(["runtime.plugins"])
     def get(self):
         """ Collect admin_schema from all plugins across all active pylons """
+        current_permissions = auth.resolve_permissions(mode="administration")
         sections = {}
         #
         for pylon_id in list(sorted(self.module.remote_runtimes.keys())):
@@ -168,7 +177,26 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
                     field["key"] = f"{field['key']}::{field['pylon_id']}"
         #
         result = sorted(sections.values(), key=lambda s: s["order"])
-        return {"sections": result}
+        #
+        # Filter sections by required_permission
+        #
+        filtered = []
+        for section in result:
+            sec_meta = SECTION_DEFINITIONS.get(section["id"], {})
+            req_perm = sec_meta.get("required_permission")
+            if req_perm:
+                section["required_permission"] = req_perm
+                if not auth.has_access(current_permissions, [req_perm]):
+                    continue
+            filtered.append(section)
+        #
+        can_view_service_descriptors = auth.has_access(
+            current_permissions, ["configuration.service_descriptors"]
+        )
+        return {
+            "sections": filtered,
+            "can_view_service_descriptors": can_view_service_descriptors,
+        }
 
 
 class API(api_tools.APIBase):  # pylint: disable=R0903

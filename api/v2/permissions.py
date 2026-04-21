@@ -31,6 +31,8 @@ def group_roles_by_permissions(auth_permissions, roles):
     auth_permissions = sorted(auth_permissions, key=lambda x: x['name'])
     roles_to_permissions = {role["name"]: set() for role in roles}
     for key, group_items in groupby(auth_permissions, key=lambda x: x['name']):
+        if key not in roles_to_permissions:
+            continue
         for item in group_items:
             roles_to_permissions[key].add(item['permission'])
     return roles_to_permissions
