@@ -37,6 +37,48 @@ def group_roles_by_permissions(auth_permissions, roles):
             roles_to_permissions[key].add(item['permission'])
     return roles_to_permissions
 
+def filter_permissions(permissions: list[str], mode: str) -> list[str]:
+    """ Differentiate permissions based on their target mode """
+    admin_only_prefixes = (
+        'admin.auth',
+        'configuration.roles',
+        'configuration.users',
+        'configuration.advanced',
+        'configuration.service_descriptors',
+        'configuration.litellm',
+        'provider_hub.',
+        'modes.',
+        'runtime.',
+        'migration.',
+        'invites.',
+        'models.admin.',
+        'configuration.roles.permissions',
+    )
+    
+    project_only_prefixes = (
+        'models.chat.',
+        'models.applications.',
+        'models.prompts.',
+        'models.social.',
+        'models.promptlib_shared.',
+        'projects.projects.',
+        'social.',
+        'notifications.',
+    )
+    
+    filtered = []
+    for p in permissions:
+        if mode == 'administration':
+            # Hide project-level specific features from the administration matrix
+            if not p.startswith(project_only_prefixes):
+                filtered.append(p)
+        else:
+            # For 'default' or project specific matrices, hide platform administration features
+            if not p.startswith(admin_only_prefixes):
+                filtered.append(p)
+                
+    return filtered
+
 
 class AdminAPI(api_tools.APIModeHandler):
     @auth.decorators.check_api({
@@ -51,7 +93,10 @@ class AdminAPI(api_tools.APIModeHandler):
         roles = auth.get_roles(target_mode)
         auth_permissions = auth.get_permissions(target_mode)
         log.info(f"{roles=} {auth_permissions=}")
-        all_permissions = auth.local_permissions
+        
+        all_permissions = list(auth.local_permissions)
+        all_permissions = filter_permissions(all_permissions, target_mode)
+        
         # log.info(f"{permissions=} {local_permissions=} {all_permissions=}")
         roles_to_permissions = group_roles_by_permissions(auth_permissions, roles)
         log.info(
@@ -153,7 +198,10 @@ class ProjectAPI(api_tools.APIModeHandler):
         """ Process """
         roles = self.module.get_roles(project_id)
         auth_permissions = self.module.get_permissions(project_id)
-        all_permissions = auth.local_permissions
+        
+        all_permissions = list(auth.local_permissions)
+        all_permissions = filter_permissions(all_permissions, 'default')
+
         roles_to_permissions = group_roles_by_permissions(auth_permissions, roles)
         all_permissions = sorted(all_permissions)
         return {
@@ -205,13 +253,17 @@ class PublicProjectAPI(api_tools.APIModeHandler):
         roles = auth.list_project_roles(project_id)
         role_map = {r['id']: r['name'] for r in roles}
         overrides = auth.list_project_role_permissions(project_id)
+        
+        all_permissions = list(auth.local_permissions)
+        all_permissions = filter_permissions(all_permissions, target_mode)
+        
         if overrides:
             roles_to_perms = {r['name']: set() for r in roles}
             for entry in overrides:
                 role_name = role_map.get(entry['role_id'])
                 if role_name and role_name in roles_to_perms:
                     roles_to_perms[role_name].add(entry['permission'])
-            all_permissions = sorted(auth.local_permissions)
+            all_permissions = sorted(all_permissions)
             return {
                 "total": len(all_permissions),
                 "rows": [{
@@ -222,7 +274,7 @@ class PublicProjectAPI(api_tools.APIModeHandler):
         # No overrides — show central defaults
         central = auth.get_permissions(mode='default')
         roles_to_perms = group_roles_by_permissions(central, roles)
-        all_permissions = sorted(auth.local_permissions)
+        all_permissions = sorted(all_permissions)
         return {
             "total": len(all_permissions),
             "rows": [{
