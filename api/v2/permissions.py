@@ -115,28 +115,30 @@ class AdminAPI(api_tools.APIModeHandler):
             project_id = p['id']
             project_name = p['name']
 
-            # Skip private and public projects
             if project_name.startswith('project_user_') or project_id == public_project_id:
                 continue
 
             roles = auth.list_project_roles(project_id)
             role_name_to_id = {r['name']: r['id'] for r in roles}
 
-            # Clear existing overrides
             existing = auth.list_project_role_permissions(project_id)
-            for entry in existing:
-                auth.delete_project_role_permission(project_id, entry['role_id'], entry['permission'])
+            existing_set = {(entry['role_id'], entry['permission']) for entry in existing}
 
-            # Apply new permissions
+            desired_set = set()
             for role_name, perms in role_to_perms.items():
                 if role_name not in role_name_to_id:
                     role_id = auth.add_project_role(project_id, role_name)
                     role_name_to_id[role_name] = role_id
                 else:
                     role_id = role_name_to_id[role_name]
-
                 for perm in perms:
-                    auth.add_project_role_permission(project_id, role_id, perm)
+                    desired_set.add((role_id, perm))
+
+            for role_id, perm in existing_set - desired_set:
+                auth.delete_project_role_permission(project_id, role_id, perm)
+
+            for role_id, perm in desired_set - existing_set:
+                auth.add_project_role_permission(project_id, role_id, perm)
 
         return {"ok": True, "message": "Successfully synced permissions to shared projects"}
 
