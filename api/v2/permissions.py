@@ -89,6 +89,57 @@ class AdminAPI(api_tools.APIModeHandler):
             auth.remove_permission_from_role(*permission, mode=target_mode)
         return {"ok": True}
 
+    @auth.decorators.check_api({
+        "permissions": ["configuration.roles.permissions.edit"],
+        "recommended_roles": {
+            "administration": {"admin": True, "viewer": False, "editor": False},
+            "default": {"admin": True, "viewer": False, "editor": False},
+            "developer": {"admin": True, "viewer": False, "editor": False},
+        }})
+    def post(self, target_mode):
+        """ Sync standard permissions to existing shared projects """
+        from collections import defaultdict
+
+        if target_mode != "default":
+            return {"error": "Sync is only supported for default mode"}, 400
+
+        public_project_id = PublicProjectAPI._get_public_project_id()
+        all_projects = self.module.context.rpc_manager.call.project_list()
+
+        central = auth.get_permissions(mode='default')
+        role_to_perms = defaultdict(set)
+        for p in central:
+            role_to_perms[p['name']].add(p['permission'])
+
+        for p in all_projects:
+            project_id = p['id']
+            project_name = p['name']
+
+            # Skip private and public projects
+            if project_name.startswith('project_user_') or project_id == public_project_id:
+                continue
+
+            roles = auth.list_project_roles(project_id)
+            role_name_to_id = {r['name']: r['id'] for r in roles}
+
+            # Clear existing overrides
+            existing = auth.list_project_role_permissions(project_id)
+            for entry in existing:
+                auth.delete_project_role_permission(project_id, entry['role_id'], entry['permission'])
+
+            # Apply new permissions
+            for role_name, perms in role_to_perms.items():
+                if role_name not in role_name_to_id:
+                    role_id = auth.add_project_role(project_id, role_name)
+                    role_name_to_id[role_name] = role_id
+                else:
+                    role_id = role_name_to_id[role_name]
+
+                for perm in perms:
+                    auth.add_project_role_permission(project_id, role_id, perm)
+
+        return {"ok": True, "message": "Successfully synced permissions to shared projects"}
+
 
 class ProjectAPI(api_tools.APIModeHandler):
     @auth.decorators.check_api({
