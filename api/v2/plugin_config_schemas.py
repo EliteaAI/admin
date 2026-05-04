@@ -84,6 +84,13 @@ SECTION_DEFINITIONS = {
         "description": "Enable dedicated banner to communicate important notifications across the platform.",
         "always_visible": True,
     },
+    "support_assistant": {
+        "title": "Support Assistant",
+        "order": 89,
+        "icon": "support_agent",
+        "description": "Enable the in-app support assistant widget for all users.",
+        "always_visible": True,
+    },
     "maintenance": {
         "title": "Maintenance",
         "order": 90,
