@@ -77,6 +77,13 @@ SECTION_DEFINITIONS = {
         "description": "Manage service descriptors for external provider integrations.",
         "required_permission": "configuration.service_descriptors",
     },
+    "resources": {
+        "title": "Resources",
+        "order": 88,
+        "icon": "menu_book",
+        "description": "Configure resource cards displayed on the environment-wide Resources page.",
+        "always_visible": True,
+    },
     "dedicated_banner": {
         "title": "Banner",
         "order": 89,
