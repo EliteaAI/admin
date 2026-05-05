@@ -61,6 +61,76 @@ def find_pylon_id_by_prefix(remote_runtimes, pylon_prefix):
     return None
 
 
+def collect_section_entries(remote_runtimes, section_id, include_meta=False):
+    """ Collect raw section entries across all active pylons.
+
+    Returns (values, fields_meta). fields_meta is empty when include_meta=False.
+    Multi-pylon keys are disambiguated with a "::pylon_id" suffix.
+    """
+    raw_entries = []
+    #
+    for pylon_id in list(sorted(remote_runtimes.keys())):
+        data = remote_runtimes[pylon_id]
+        #
+        if time.time() - data.get("timestamp", 0) > 60:
+            continue
+        #
+        runtime_info = data.get("runtime_info", [])
+        #
+        for plugin in runtime_info:
+            schema = plugin.get("admin_schema")
+            if not schema:
+                continue
+            #
+            plugin_name = plugin["name"]
+            config = plugin.get("config") or {}
+            #
+            for prop_key, prop_def in schema.get("properties", {}).items():
+                if prop_def.get("section") != section_id:
+                    continue
+                #
+                path = prop_def.get("path", prop_key)
+                raw_value = get_nested(config, path)
+                if raw_value is None:
+                    raw_value = prop_def.get("default")
+                #
+                raw_entries.append({
+                    "prop_key": prop_key,
+                    "pylon_id": pylon_id,
+                    "plugin_name": plugin_name,
+                    "raw_value": raw_value,
+                    "path": path,
+                    "requires_restart": prop_def.get("requires_restart", False),
+                })
+    #
+    key_pylons = {}
+    for entry in raw_entries:
+        pk = entry["prop_key"]
+        if pk not in key_pylons:
+            key_pylons[pk] = set()
+        key_pylons[pk].add(entry["pylon_id"])
+    #
+    values = {}
+    fields_meta = {}
+    for entry in raw_entries:
+        pk = entry["prop_key"]
+        if len(key_pylons.get(pk, set())) > 1:
+            unique_key = f"{pk}::{entry['pylon_id']}"
+        else:
+            unique_key = pk
+        #
+        values[unique_key] = entry["raw_value"]
+        if include_meta:
+            fields_meta[unique_key] = {
+                "plugin": entry["plugin_name"],
+                "pylon_id": entry["pylon_id"],
+                "path": entry["path"],
+                "requires_restart": entry["requires_restart"],
+            }
+    #
+    return values, fields_meta
+
+
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     """ API """
 
@@ -75,70 +145,9 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
             if not auth.has_access(current_permissions, [req_perm]):
                 return {"ok": False, "error": "access_denied"}, 403
         #
-        # Pass 1: collect all entries
-        raw_entries = []
-        #
-        for pylon_id in list(sorted(self.module.remote_runtimes.keys())):
-            data = self.module.remote_runtimes[pylon_id]
-            #
-            if time.time() - data.get("timestamp", 0) > 60:
-                continue
-            #
-            runtime_info = data.get("runtime_info", [])
-            #
-            for plugin in runtime_info:
-                schema = plugin.get("admin_schema")
-                if not schema:
-                    continue
-                #
-                plugin_name = plugin["name"]
-                config = plugin.get("config") or {}
-                #
-                for prop_key, prop_def in schema.get("properties", {}).items():
-                    if prop_def.get("section") != section_id:
-                        continue
-                    #
-                    path = prop_def.get("path", prop_key)
-                    raw_value = get_nested(config, path)
-                    if raw_value is None:
-                        raw_value = prop_def.get("default")
-                    #
-                    raw_entries.append({
-                        "prop_key": prop_key,
-                        "pylon_id": pylon_id,
-                        "plugin_name": plugin_name,
-                        "raw_value": raw_value,
-                        "path": path,
-                        "requires_restart": prop_def.get("requires_restart", False),
-                    })
-        #
-        # Pass 2: detect multi-pylon keys
-        key_pylons = {}
-        for entry in raw_entries:
-            pk = entry["prop_key"]
-            if pk not in key_pylons:
-                key_pylons[pk] = set()
-            key_pylons[pk].add(entry["pylon_id"])
-        #
-        # Pass 3: build values with unique keys
-        values = {}
-        fields_meta = {}
-        #
-        for entry in raw_entries:
-            pk = entry["prop_key"]
-            if len(key_pylons.get(pk, set())) > 1:
-                unique_key = f"{pk}::{entry['pylon_id']}"
-            else:
-                unique_key = pk
-            #
-            values[unique_key] = entry["raw_value"]
-            fields_meta[unique_key] = {
-                "plugin": entry["plugin_name"],
-                "pylon_id": entry["pylon_id"],
-                "path": entry["path"],
-                "requires_restart": entry["requires_restart"],
-            }
-        #
+        values, fields_meta = collect_section_entries(
+            self.module.remote_runtimes, section_id, include_meta=True,
+        )
         return {"values": values, "fields_meta": fields_meta}
 
     @auth.decorators.check_api(["runtime.plugins"])
@@ -287,6 +296,23 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
             ],
         }
 
+_PUBLIC_SECTIONS = {"resources"}
+
+
+class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
+    """ API — readable by any authenticated user for whitelisted sections """
+
+    def get(self, section_id):
+        """ Read current values for a public-readable section """
+        if section_id not in _PUBLIC_SECTIONS:
+            return {"ok": False, "error": "access_denied"}, 403
+        #
+        values, _ = collect_section_entries(
+            self.module.remote_runtimes, section_id, include_meta=False,
+        )
+        return {"values": values}
+
+
 class API(api_tools.APIBase):  # pylint: disable=R0903
     """ API """
 
@@ -296,4 +322,5 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
 
     mode_handlers = {
         'administration': AdminAPI,
+        'prompt_lib': PromptLibAPI,
     }
