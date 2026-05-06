@@ -269,6 +269,85 @@ class PublicProjectAPI(api_tools.APIModeHandler):
         return int(pid) if pid is not None else None
 
 
+class SupportProjectAPI(api_tools.APIModeHandler):
+    """API for managing Support Assistant project permissions."""
+
+    @auth.decorators.check_api({
+        "permissions": ["configuration.roles.permissions.view"],
+        "recommended_roles": {
+            "administration": {"admin": True, "viewer": False, "editor": False},
+        }}, mode="administration")
+    def get(self, target_mode):
+        project_id = self._get_support_project_id()
+        if project_id is None:
+            return {"error": "Support project not configured"}, 404
+        roles = auth.list_project_roles(project_id)
+        role_map = {r['id']: r['name'] for r in roles}
+        overrides = auth.list_project_role_permissions(project_id)
+        if overrides:
+            roles_to_perms = {r['name']: set() for r in roles}
+            for entry in overrides:
+                role_name = role_map.get(entry['role_id'])
+                if role_name and role_name in roles_to_perms:
+                    roles_to_perms[role_name].add(entry['permission'])
+            all_permissions = sorted(auth.local_permissions)
+            return {
+                "total": len(all_permissions),
+                "rows": [{
+                    "name": p,
+                    **{rn: p in perms for rn, perms in roles_to_perms.items()}
+                } for p in all_permissions]
+            }
+        # No overrides — show central defaults
+        central = auth.get_permissions(mode='default')
+        roles_to_perms = group_roles_by_permissions(central, roles)
+        all_permissions = sorted(auth.local_permissions)
+        return {
+            "total": len(all_permissions),
+            "rows": [{
+                "name": p,
+                **{r['name']: p in roles_to_perms[r['name']] for r in roles}
+            } for p in all_permissions]
+        }
+
+    @auth.decorators.check_api({
+        "permissions": ["configuration.roles.permissions.edit"],
+        "recommended_roles": {
+            "administration": {"admin": True, "viewer": False, "editor": False},
+        }}, mode="administration")
+    def put(self, target_mode):
+        project_id = self._get_support_project_id()
+        if project_id is None:
+            return {"error": "Support project not configured"}, 404
+        new_data = request.get_json()
+        roles = auth.list_project_roles(project_id)
+        role_name_to_id = {r['name']: r['id'] for r in roles}
+        # Clear existing overrides
+        existing = auth.list_project_role_permissions(project_id)
+        for entry in existing:
+            auth.delete_project_role_permission(
+                project_id, entry['role_id'], entry['permission'],
+            )
+        # Insert new permissions
+        for row in new_data:
+            perm_name = row.get('name')
+            if not perm_name:
+                continue
+            for role_name, role_id in role_name_to_id.items():
+                if row.get(role_name):
+                    auth.add_project_role_permission(project_id, role_id, perm_name)
+        return {"ok": True}
+
+    @staticmethod
+    def _get_support_project_id():
+        from tools import this  # pylint: disable=C0415,E0401
+        try:
+            module = this.for_module("support_assistant").module
+            return module.support_project_id
+        except Exception:
+            return None
+
+
 class API(api_tools.APIBase):  # pylint: disable=R0903
     url_params = [
         "<string:target_mode>",
@@ -280,4 +359,5 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
         'default': ProjectAPI,
         'administration': AdminAPI,
         'public': PublicProjectAPI,
+        'support': SupportProjectAPI,
     }
