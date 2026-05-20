@@ -7,6 +7,8 @@ from tools import rpc_tools, db, db_tools, auth
 
 from pylon.core.tools import web, log
 
+from ..utils import filter_restricted_roles, validate_role_assignment
+
 
 class RPC:
 
@@ -16,7 +18,8 @@ class RPC:
 
     @web.rpc("admin_get_roles", "get_roles")
     def get_roles(self, project_id: int, **kwargs) -> list[dict]:
-        return auth.list_project_roles(project_id)
+        roles = auth.list_project_roles(project_id)
+        return filter_restricted_roles(roles)
 
     @web.rpc("admin_get_role", "get_role")
     def get_role(self, project_id: int, role_name: str, **kwargs) -> Optional[dict]:
@@ -90,6 +93,11 @@ class RPC:
 
     @web.rpc("admin_add_user_to_project", "add_user_to_project")
     def add_user_to_project(self, project_id: int, user_id: int, role_names: list[str], **kwargs) -> bool:
+        is_valid, invalid_roles = validate_role_assignment(role_names)
+        if not is_valid:
+            log.warning(f"Attempted to assign restricted roles: {invalid_roles}")
+            return False
+
         user_roles = auth.list_project_user_roles(project_id, user_id)
         existing_role_ids = {r['role_id'] for r in user_roles}
         for role_name in role_names:
@@ -128,6 +136,9 @@ class RPC:
             if ur['role_id'] in role_map:
                 user_roles[ur['user_id']].append(role_map[ur['role_id']])
 
+        for user_id in user_roles:
+            user_roles[user_id] = filter_restricted_roles(user_roles[user_id])
+
         if filter_system_user:
             system_user = self.get_project_system_user(project_id)
             if system_user and int(system_user['id']) in user_roles:
@@ -136,6 +147,11 @@ class RPC:
 
     @web.rpc("update_roles_for_user", "admin_update_roles_for_user")
     def update_roles_for_user(self, project_id: int, user_ids: List[int], new_roles: List[str], **kwargs) -> bool:
+        is_valid, invalid_roles = validate_role_assignment(new_roles)
+        if not is_valid:
+            log.warning(f"Attempted to assign restricted roles: {invalid_roles}")
+            return False
+
         roles_data = auth.list_project_roles(project_id)
         role_name_map = {r['name']: r['id'] for r in roles_data}
         target_role_ids = []

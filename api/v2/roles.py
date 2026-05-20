@@ -26,6 +26,8 @@ from sqlalchemy import schema
 
 from tools import auth, db, api_tools  # pylint: disable=E0401
 
+from ...utils import filter_restricted_roles
+
 
 class AdminAPI(api_tools.APIModeHandler):
     @auth.decorators.check_api({
@@ -37,7 +39,7 @@ class AdminAPI(api_tools.APIModeHandler):
         }})
     def get(self, target_mode: str):
         roles = auth.get_roles(target_mode)
-        return roles
+        return filter_restricted_roles(roles)
     
     @auth.decorators.check_api({
         "permissions": ["configuration.roles.roles.create"],
@@ -81,7 +83,7 @@ class ProjectAPI(api_tools.APIModeHandler):
     @auth.decorators.check_api(["configuration.roles.roles.view"])
     def get(self, project_id: int):
         roles = self.module.get_roles(project_id)
-        return roles
+        return filter_restricted_roles(roles)
 
     @auth.decorators.check_api(["configuration.roles.roles.create"])
     def post(self, project_id: int):  # pylint: disable=R0201

@@ -29,6 +29,7 @@ from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
 from tools import auth, api_tools  # pylint: disable=E0401
 
 from ...models.pd.user_input_field import UserInputFieldPD
+from ...utils import validate_role_assignment, get_role_validation_error
 
 
 class AdminAPI(api_tools.APIModeHandler):
@@ -104,6 +105,11 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
     def post(self, project_id: int, **kwargs):
         user_emails = request.json["emails"]
         user_roles = request.json["roles"]
+
+        is_valid, invalid_roles = validate_role_assignment(user_roles)
+        if not is_valid:
+            return get_role_validation_error(invalid_roles)
+
         results = []
         for user_email in user_emails:
             try:
@@ -173,6 +179,11 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
             user_ids.append(user_id)
 
         new_user_roles = request.json["roles"]
+
+        is_valid, invalid_roles = validate_role_assignment(new_user_roles)
+        if not is_valid:
+            return get_role_validation_error(invalid_roles)
+
         result = self.module.context.rpc_manager.call.update_roles_for_user(
             project_id, user_ids, new_user_roles)
         return {'msg': f'roles updated' if result else 'something is wrong'}, 200
