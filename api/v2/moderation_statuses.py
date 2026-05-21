@@ -19,10 +19,13 @@
 
 import flask
 
+from pydantic import ValidationError
+
 from pylon.core.tools import log
 from tools import auth, api_tools, db
 
 from ...models.moderation import ModerationState
+from ...models.pd.moderation import ModerationStateListQuery, ModerationStateListResponse, ModerationStateResponse
 
 
 class AdminAPI(api_tools.APIModeHandler):
@@ -35,67 +38,68 @@ class AdminAPI(api_tools.APIModeHandler):
         }})
     def get(self):
         """List all moderation statuses with pagination"""
-        limit = flask.request.args.get("limit", 20, type=int)
-        offset = flask.request.args.get("offset", 0, type=int)
-
-        user_id_filter = flask.request.args.get("user_id", None, type=int)
-        status_filter = flask.request.args.get("status", None, type=str)
-        issue_type_filter = flask.request.args.get("issue_type", None, type=str)
-        project_id_filter = flask.request.args.get("project_id", None, type=int)
-        entity_id_filter = flask.request.args.get("entity_id", None, type=int)
-
-        sort_by = flask.request.args.get("sort_by", "created_at", type=str)
-        sort_order = flask.request.args.get("sort_order", "desc", type=str)
+        try:
+            query_params = ModerationStateListQuery(
+                limit=flask.request.args.get("limit", 20, type=int),
+                offset=flask.request.args.get("offset", 0, type=int),
+                search=flask.request.args.get("search", None, type=str),
+                status=flask.request.args.get("status", None, type=str),
+                issue_type=flask.request.args.get("issue_type", None, type=str),
+                project_id=flask.request.args.get("project_id", None, type=int),
+                entity_id=flask.request.args.get("entity_id", None, type=int),
+                sort_by=flask.request.args.get("sort_by", "created_at", type=str),
+                sort_order=flask.request.args.get("sort_order", "desc", type=str),
+            )
+        except ValidationError as e:
+            return {"error": "Validation error", "details": e.errors()}, 400
 
         with db.with_project_schema_session(None) as session:
             query = session.query(ModerationState)
 
-            if user_id_filter:
-                query = query.filter(ModerationState.user_id == int(user_id_filter))
+            if query_params.search:
+                query = query.filter(ModerationState.user_id == int(query_params.search))
 
-            if status_filter:
-                query = query.filter(ModerationState.status == status_filter)
+            if query_params.status:
+                query = query.filter(ModerationState.status == query_params.status)
 
-            if issue_type_filter:
-                query = query.filter(ModerationState.issue_type == issue_type_filter)
+            if query_params.issue_type:
+                query = query.filter(ModerationState.issue_type == query_params.issue_type)
 
-            if project_id_filter:
-                query = query.filter(ModerationState.project_id == project_id_filter)
+            if query_params.project_id:
+                query = query.filter(ModerationState.project_id == query_params.project_id)
 
-            if entity_id_filter:
-                query = query.filter(ModerationState.entity_id == entity_id_filter)
+            if query_params.entity_id:
+                query = query.filter(ModerationState.entity_id == query_params.entity_id)
 
             total = query.count()
 
-            if hasattr(ModerationState, sort_by):
-                order_column = getattr(ModerationState, sort_by)
-                if sort_order.lower() == "desc":
+            if hasattr(ModerationState, query_params.sort_by):
+                order_column = getattr(ModerationState, query_params.sort_by)
+                if query_params.sort_order.lower() == "desc":
                     query = query.order_by(order_column.desc())
                 else:
                     query = query.order_by(order_column.asc())
 
-            statuses = query.limit(limit).offset(offset).all()
+            statuses = query.limit(query_params.limit).offset(query_params.offset).all()
 
             rows = []
             for status in statuses:
-                rows.append({
-                    "id": status.id,
-                    "user_id": status.user_id,
-                    "project_id": status.project_id,
-                    "issue_type": status.issue_type,
-                    "entity_id": status.entity_id,
-                    "description": status.description,
-                    "status": status.status,
-                    "rejection_comment": status.rejection_comment,
-                    "meta": status.meta,
-                    "created_at": status.created_at.isoformat(timespec="seconds") if status.created_at else None,
-                    "updated_at": status.updated_at.isoformat(timespec="seconds") if status.updated_at else None,
-                })
+                rows.append(ModerationStateResponse(
+                    id=status.id,
+                    user_id=status.user_id,
+                    project_id=status.project_id,
+                    issue_type=status.issue_type,
+                    entity_id=status.entity_id,
+                    description=status.description,
+                    status=status.status,
+                    rejection_comment=status.rejection_comment,
+                    meta=status.meta,
+                    created_at=status.created_at.isoformat(timespec="seconds") if status.created_at else None,
+                    updated_at=status.updated_at.isoformat(timespec="seconds") if status.updated_at else None,
+                ))
 
-            return {
-                "total": total,
-                "rows": rows,
-            }, 200
+            response = ModerationStateListResponse(total=total, rows=rows)
+            return response.model_dump(), 200
 
 
 class API(api_tools.APIBase):

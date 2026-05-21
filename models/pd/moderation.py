@@ -1,8 +1,4 @@
-try:
-    from pydantic.v1 import BaseModel, Field, validator
-except:  # pylint: disable=W0702
-    from pydantic import BaseModel, Field, validator
-
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, Dict, Any
 from datetime import datetime
 
@@ -15,7 +11,8 @@ class ModerationStateCreate(BaseModel):
     status: str = Field(default="pending", max_length=64)
     meta: Optional[Dict[str, Any]] = Field(default_factory=dict)
 
-    @validator('status')
+    @field_validator('status')
+    @classmethod
     def validate_status(cls, v):
         allowed_statuses = ['pending', 'approved', 'rejected']
         if v not in allowed_statuses:
@@ -29,7 +26,8 @@ class ModerationStateUpdate(BaseModel):
     rejection_comment: Optional[str] = None
     meta: Optional[Dict[str, Any]] = None
 
-    @validator('status')
+    @field_validator('status')
+    @classmethod
     def validate_status(cls, v):
         if v is not None:
             allowed_statuses = ['pending', 'approved', 'rejected']
@@ -37,9 +35,10 @@ class ModerationStateUpdate(BaseModel):
                 raise ValueError(f'Status must be one of: {", ".join(allowed_statuses)}')
         return v
 
-    @validator('rejection_comment')
-    def validate_rejection_comment(cls, v, values):
-        if values.get('status') == 'rejected' and not v:
+    @field_validator('rejection_comment')
+    @classmethod
+    def validate_rejection_comment(cls, v, info):
+        if info.data.get('status') == 'rejected' and not v:
             raise ValueError('rejection_comment is required when status is rejected')
         return v
 
@@ -72,9 +71,10 @@ class ModerationStateListQuery(BaseModel):
     project_id: Optional[int] = Field(None, ge=1)
     entity_id: Optional[int] = Field(None, ge=1)
     sort_by: str = Field(default="created_at", max_length=64)
-    sort_order: str = Field(default="desc", regex="^(asc|desc)$")
+    sort_order: str = Field(default="desc", pattern="^(asc|desc)$")
 
-    @validator('status')
+    @field_validator('status')
+    @classmethod
     def validate_status(cls, v):
         if v is not None:
             allowed_statuses = ['pending', 'approved', 'rejected']

@@ -20,10 +20,7 @@
 import flask
 from datetime import datetime
 
-try:
-    from pydantic.v1 import ValidationError
-except:  # pylint: disable=W0702
-    from pydantic import ValidationError
+from pydantic import ValidationError
 
 from pylon.core.tools import log
 from tools import auth, api_tools, db
