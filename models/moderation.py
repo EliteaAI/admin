@@ -8,7 +8,7 @@ from tools import db, config as c
 class ModerationState(db.Base):
     __tablename__ = 'moderation_state'
     __table_args__ = (
-        {'schema': c.POSTGRES_TENANT_SCHEMA},
+        {'schema': c.POSTGRES_SCHEMA},
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

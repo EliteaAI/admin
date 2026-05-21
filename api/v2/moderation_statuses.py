@@ -17,6 +17,7 @@
 
 """ API for moderation status management """
 
+import json
 import flask
 
 from pydantic import ValidationError
@@ -32,7 +33,7 @@ class AdminAPI(api_tools.APIModeHandler):
     @auth.decorators.check_api({
         "permissions": ["admin.moderation"],
         "recommended_roles": {
-            "administration": {"admin": True, "viewer": True, "editor": False},
+            "administration": {"admin": True, "viewer": False, "editor": False},
             "default": {"admin": True, "viewer": False, "editor": False},
             "developer": {"admin": True, "viewer": False, "editor": False},
         }})
@@ -51,7 +52,7 @@ class AdminAPI(api_tools.APIModeHandler):
                 sort_order=flask.request.args.get("sort_order", "desc", type=str),
             )
         except ValidationError as e:
-            return {"error": "Validation error", "details": e.errors()}, 400
+            return {"error": "Validation error", "details": json.loads(e.json())}, 400
 
         with db.with_project_schema_session(None) as session:
             query = session.query(ModerationState)
@@ -60,7 +61,7 @@ class AdminAPI(api_tools.APIModeHandler):
                 query = query.filter(ModerationState.user_id == int(query_params.search))
 
             if query_params.status:
-                query = query.filter(ModerationState.status == query_params.status)
+                query = query.filter(ModerationState.status == query_params.status.value)
 
             if query_params.issue_type:
                 query = query.filter(ModerationState.issue_type == query_params.issue_type)
