@@ -36,6 +36,7 @@ class ModerationStateUpdate(BaseModel):
 class ModerationStateResponse(BaseModel):
     id: int
     user_id: int
+    user_email: Optional[str] = None
     project_id: int
     issue_type: str
     entity_id: Optional[str]
