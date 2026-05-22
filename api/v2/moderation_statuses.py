@@ -47,7 +47,7 @@ class AdminAPI(api_tools.APIModeHandler):
                 status=flask.request.args.get("status", None, type=str),
                 issue_type=flask.request.args.get("issue_type", None, type=str),
                 project_id=flask.request.args.get("project_id", None, type=int),
-                entity_id=flask.request.args.get("entity_id", None, type=int),
+                entity_id=flask.request.args.get("entity_id", None, type=str),
                 sort_by=flask.request.args.get("sort_by", "created_at", type=str),
                 sort_order=flask.request.args.get("sort_order", "desc", type=str),
             )

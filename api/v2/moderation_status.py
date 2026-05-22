@@ -111,7 +111,7 @@ class DefaultAPI(api_tools.APIModeHandler):
             "default": {"admin": True, "viewer": True, "editor": True},
             "developer": {"admin": True, "viewer": True, "editor": True},
         }})
-    def get(self, project_id: int, entity_id: int):
+    def get(self, project_id: int, entity_id: str):
         issue_type = flask.request.args.get("issue_type", None, type=str)
 
         current_user = auth.current_user()
@@ -154,7 +154,7 @@ class DefaultAPI(api_tools.APIModeHandler):
             "default": {"admin": True, "viewer": True, "editor": True},
             "developer": {"admin": True, "viewer": True, "editor": True},
         }})
-    def post(self, project_id: int, entity_id: int):
+    def post(self, project_id: int, entity_id: str):
         try:
             data = ModerationStateCreate(**flask.request.json)
         except ValidationError as e:
@@ -196,7 +196,7 @@ class DefaultAPI(api_tools.APIModeHandler):
 class API(api_tools.APIBase):
     url_params = [
         "<string:mode>",
-        "<string:mode>/<int:project_id>/<int:entity_id>",
+        "<string:mode>/<int:project_id>/<string:entity_id>",
     ]
 
     mode_handlers = {

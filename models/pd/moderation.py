@@ -38,7 +38,7 @@ class ModerationStateResponse(BaseModel):
     user_id: int
     project_id: int
     issue_type: str
-    entity_id: Optional[int]
+    entity_id: Optional[str]
     description: str
     status: str
     rejection_comment: Optional[str]
@@ -59,6 +59,6 @@ class ModerationStateListQuery(BaseModel):
     status: Optional[ModerationStatus] = None
     issue_type: Optional[str] = None
     project_id: Optional[int] = Field(None, ge=1)
-    entity_id: Optional[int] = Field(None, ge=1)
+    entity_id: Optional[str] = Field(None)
     sort_by: str = Field(default="created_at", max_length=64)
     sort_order: str = Field(default="desc", pattern="^(asc|desc)$")

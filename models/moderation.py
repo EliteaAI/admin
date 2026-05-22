@@ -15,7 +15,7 @@ class ModerationState(db.Base):
     user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     project_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     issue_type: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
-    entity_id: Mapped[int] = mapped_column(Integer, nullable=True, index=True)
+    entity_id: Mapped[str] = mapped_column(String, nullable=True, index=True)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(64), nullable=False, server_default='pending', index=True)
     rejection_comment: Mapped[str] = mapped_column(Text, nullable=True)
