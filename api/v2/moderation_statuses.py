@@ -58,7 +58,9 @@ class AdminAPI(api_tools.APIModeHandler):
             query = session.query(ModerationState)
 
             if query_params.search:
-                query = query.filter(ModerationState.user_id == int(query_params.search))
+                search_result = auth.list_users_paginated(search=query_params.search, limit=1000, offset=0)
+                matching_ids = [u["id"] for u in search_result.get("rows", [])]
+                query = query.filter(ModerationState.user_id.in_(matching_ids)) if matching_ids else query.filter(False)
 
             if query_params.status:
                 query = query.filter(ModerationState.status == query_params.status.value)
@@ -83,11 +85,19 @@ class AdminAPI(api_tools.APIModeHandler):
 
             statuses = query.limit(query_params.limit).offset(query_params.offset).all()
 
+            # Resolve user emails
+            user_ids = set(s.user_id for s in statuses if s.user_id)
+            user_map = {}
+            if user_ids:
+                user_infos = auth.list_users(user_ids=user_ids)
+                user_map = {u["id"]: u.get("email") for u in user_infos}
+
             rows = []
             for status in statuses:
                 rows.append(ModerationStateResponse(
                     id=status.id,
                     user_id=status.user_id,
+                    user_email=user_map.get(status.user_id),
                     project_id=status.project_id,
                     issue_type=status.issue_type,
                     entity_id=status.entity_id,
