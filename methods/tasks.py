@@ -236,7 +236,7 @@ class Method:  # pylint: disable=E1101,R0903
                 #
                 for _ in range(10):  # safety limit
                     if isinstance(func, functools.partial):
-                        func = func.func if not func.args else func.args[0]
+                        func = func.func
                     elif hasattr(func, '__wrapped__'):
                         func = func.__wrapped__
                     elif hasattr(func, '__func__'):
@@ -256,7 +256,7 @@ class Method:  # pylint: disable=E1101,R0903
                     }
                     if first_line.lower() not in skip \
                             and not first_line.startswith("partial("):
-                        description = first_line
+                        description = doc
             except Exception:  # pylint: disable=W0703
                 pass
             result.append({"name": name, "description": description})
