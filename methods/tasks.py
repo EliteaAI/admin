@@ -33,6 +33,37 @@ from ..tasks import mesh_tasks
 from ..tasks import role_migration
 
 
+# ── Legacy task-to-group mapping ──────────────────────────────────────────
+# Maps task names to their display group when the registering plugin does
+# not pass an explicit ``group=`` kwarg.  New tasks should pass ``group=``
+# at registration time instead of adding entries here.  Do NOT modify this
+# dict for newly-created tasks.
+LEGACY_TASK_GROUPS = {
+    # R-2.0.3
+    "migrate_admin_shell_to_inplace": "R-2.0.3",
+    "migrate_ado_project_to_toolkit": "R-2.0.3",
+    "migration_rename_wiki_bucket": "R-2.0.3",
+    # R-2.0.2
+    "create_notifications_user_id_index": "R-2.0.2",
+    "migrate_admin_to_super_admin": "R-2.0.2",
+    "migrate_configuration_data_alita_title": "R-2.0.2",
+    "migrate_conversation_source_to_elitea": "R-2.0.2",
+    "migrate_jira_confluence_hosting": "R-2.0.2",
+    "migrate_toolkit_settings_alita_title": "R-2.0.2",
+    "notifications_backfill_messages": "R-2.0.2",
+    "notifications_migrate_schema": "R-2.0.2",
+    # R-2.0.1
+    "migrate_application_description_size": "R-2.0.1",
+    # Older
+    "chat_cleanup_dup_msgs": "Older",
+    "download_static_icons": "Older",
+    "eliminate_prompts": "Older",
+    "indexer_migrate": "Older",
+    "migrate_agent_version_null_instructions": "Older",
+    "migrate_artifact_buckets_retention": "Older",
+}
+
+
 class Method:  # pylint: disable=E1101,R0903
     """
         Method Resource
@@ -47,6 +78,7 @@ class Method:  # pylint: disable=E1101,R0903
     @web.init()
     def _tasks_init(self):
         self.admin_tasks = {}  # name -> func
+        self.admin_task_groups = {}  # name -> group (explicit only)
         #
         self.event_node = arbiter.make_event_node(
             config={
@@ -98,14 +130,16 @@ class Method:  # pylint: disable=E1101,R0903
             self.register_admin_task(task_name, task_func)
 
     @web.method()
-    def register_admin_task(self, name, func):
-        """ Method """
+    def register_admin_task(self, name, func, group=None):
+        """ Register an admin task, optionally assigning it to a display group. """
         if name in self.admin_tasks:
             raise RuntimeError(f"Task already registered: {name}")
         #
         partial_func = functools.partial(self.execute_admin_task, func)
         #
         self.admin_tasks[name] = partial_func
+        if group is not None:
+            self.admin_task_groups[name] = group
         self.task_node.register_task(partial_func, name)
 
     @web.method()
@@ -117,6 +151,7 @@ class Method:  # pylint: disable=E1101,R0903
             raise RuntimeError(f"Task is not registered: {name}")
         #
         partial_func = self.admin_tasks.pop(name)
+        self.admin_task_groups.pop(name, None)
         #
         self.task_node.unregister_task(partial_func, name)
 
@@ -259,7 +294,10 @@ class Method:  # pylint: disable=E1101,R0903
                         description = doc
             except Exception:  # pylint: disable=W0703
                 pass
-            result.append({"name": name, "description": description})
+            group = self.admin_task_groups.get(
+                name, LEGACY_TASK_GROUPS.get(name, "General")
+            )
+            result.append({"name": name, "description": description, "group": group})
         return result
 
     @web.deinit()
