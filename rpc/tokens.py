@@ -39,7 +39,7 @@ def _rotate_admin_token():
     secrets["auth_token"] = token
     vault_client.set_secrets(secrets)
     #
-    log.info("Admin auth_token rotated")
+    log.debug("Admin auth_token rotated")
 
 
 def _rotate_project_tokens():
@@ -67,7 +67,7 @@ def _rotate_project_tokens():
         project_secrets["auth_token"] = token
         vault_client.set_secrets(project_secrets)
         #
-        log.info("Project %s auth_token rotated", project_id)
+        log.debug("Project %s auth_token rotated", project_id)
 
 
 class RPC:
