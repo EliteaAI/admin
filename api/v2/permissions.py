@@ -52,7 +52,6 @@ class AdminAPI(api_tools.APIModeHandler):
         auth_permissions = auth.get_permissions(target_mode)
         log.info(f"{roles=} {auth_permissions=}")
         all_permissions = auth.local_permissions
-        # log.info(f"{permissions=} {local_permissions=} {all_permissions=}")
         roles_to_permissions = group_roles_by_permissions(auth_permissions, roles)
         log.info(
             f"{roles=} \n {auth_permissions=} \n {all_permissions=} \n {roles_to_permissions=}")

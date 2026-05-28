@@ -122,40 +122,6 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
             results.append(result)
         added_ids = {r['id'] for r in results if r.get('status') == 'ok'}
         has_errors = any(r.get('status') == 'error' for r in results)
-        # try:
-        #     if invitation_integration := request.json.get('invitation_integration'):
-        #         from tools import TaskManager
-        #         try:
-        #             invitation_integration = json.loads(
-        #                 invitation_integration
-        #                 .replace("'", '"')
-        #                 .replace("None", "null")
-        #             )
-        #         except json.JSONDecodeError as exc:
-        #             log.info(f"Invitation integration exception: {exc}")
-        #             pass
-        #         log.info(f"Invitation integration: {invitation_integration=} "
-        #                  f"{type(invitation_integration)=}")
-        #         base_integration = invitation_integration['smtp_integration']
-        #         log.info(f"Base integration: {base_integration}")
-        #         email_integration = self.module.context.rpc_manager.call.integrations_get_by_id(
-        #             project_id=base_integration['project_id'],
-        #             integration_id=base_integration['id'],
-        #         )
-        #         log.info(f"Sending invitation to {user_emails} with {email_integration}")
-        #         recipients = []
-        #         for i in results:
-        #             if i['status'] == 'ok':
-        #                 added_ids.add(i['id'])
-        #                 recipients.append(i['email'])
-        #             i['email_sent'] = i['status'] == 'ok'
-        #         TaskManager(project_id=project_id).run_task([{
-        #             'recipients': recipients,
-        #             'subject': f'Invitation to a Centry project {project_id}',
-        #             'template': invitation_integration['template'],
-        #         }], email_integration.task_id)
-        # except ImportError:
-        #     ...
         self.module.context.event_manager.fire_event(
             "user_added_to_project", {'project_id': project_id, 'user_ids': added_ids},
         )
