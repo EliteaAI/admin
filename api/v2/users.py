@@ -26,7 +26,7 @@ except:  # pylint: disable=W0702
     from pydantic import ValidationError
 
 from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
-from tools import auth, api_tools  # pylint: disable=E0401
+from tools import auth, api_tools, register_openapi  # pylint: disable=E0401
 
 from ...models.pd.user_input_field import UserInputFieldPD
 from ...utils import validate_role_assignment, get_role_validation_error
@@ -50,6 +50,14 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
         'administration': AdminAPI,
     }
 
+    @register_openapi(
+        name="List Project Users",
+        description="List users and their roles in a project.",
+        parameters=[
+            {"name": "project_id", "in": "path", "schema": {"type": "integer"},
+             "description": "Project identifier."},
+        ],
+    )
     @auth.decorators.check_api({
         "permissions": ["configuration.users.users.view"],
         "recommended_roles": {
@@ -94,6 +102,14 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
             "rows": result,
         }, 200
 
+    @register_openapi(
+        name="Add Users to Project",
+        description="Add users to a project by email with specified roles.",
+        parameters=[
+            {"name": "project_id", "in": "path", "schema": {"type": "integer"},
+             "description": "Project identifier."},
+        ],
+    )
     @auth.decorators.check_api({
         "permissions": ["configuration.users.users.create"],
         "recommended_roles": {
@@ -127,6 +143,14 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
         )
         return results, 400 if has_errors else 200
 
+    @register_openapi(
+        name="Update User Roles in Project",
+        description="Update roles for one or more users in a project.",
+        parameters=[
+            {"name": "project_id", "in": "path", "schema": {"type": "integer"},
+             "description": "Project identifier."},
+        ],
+    )
     @auth.decorators.check_api({
         "permissions": ["configuration.users.users.edit"],
         "recommended_roles": {
@@ -154,6 +178,16 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
             project_id, user_ids, new_user_roles)
         return {'msg': f'roles updated' if result else 'something is wrong'}, 200
 
+    @register_openapi(
+        name="Remove Users from Project",
+        description="Remove users from a project.",
+        parameters=[
+            {"name": "project_id", "in": "path", "schema": {"type": "integer"},
+             "description": "Project identifier."},
+            {"name": "id[]", "in": "query", "schema": {"type": "string"},
+             "description": "Comma-separated user IDs to remove."},
+        ],
+    )
     @auth.decorators.check_api({
         "permissions": ["configuration.users.users.delete"],
         "recommended_roles": {

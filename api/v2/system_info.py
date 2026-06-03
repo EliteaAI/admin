@@ -20,7 +20,7 @@
 import time
 
 from tools import auth  # pylint: disable=E0401
-from tools import api_tools  # pylint: disable=E0401
+from tools import api_tools, register_openapi  # pylint: disable=E0401
 
 
 _PRIORITY_PLUGINS = [
@@ -54,6 +54,10 @@ def _collect_plugin_versions(remote_runtimes):
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     """ API """
 
+    @register_openapi(
+        name="Get System Info (Admin)",
+        description="Get version info for priority plugins across all active pylons.",
+    )
     @auth.decorators.check_api(["runtime.plugins"])
     def get(self):
         """ Process GET """
@@ -65,6 +69,10 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
 class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     """ API — accessible by any authenticated user (prompt_lib mode) """
 
+    @register_openapi(
+        name="Get System Info",
+        description="Get version info for priority plugins (accessible to all authenticated users).",
+    )
     def get(self):
         """ Process GET """
         return {

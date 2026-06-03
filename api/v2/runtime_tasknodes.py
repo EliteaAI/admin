@@ -22,12 +22,24 @@ import flask  # pylint: disable=E0401,W0611
 from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
 
 from tools import auth  # pylint: disable=E0401
-from tools import api_tools  # pylint: disable=E0401
+from tools import api_tools, register_openapi  # pylint: disable=E0401
 
 
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     """ API """
 
+    @register_openapi(
+        name="Get Task Node State",
+        description="List, refresh, or stop tasks on a task node. Actions: list, refresh, stop.",
+        parameters=[
+            {"name": "action", "in": "query", "schema": {"type": "string", "default": "list"},
+             "description": "Action to perform: list, refresh, or stop."},
+            {"name": "node", "in": "query", "schema": {"type": "string"},
+             "description": "Node reference (e.g. plugin_name.task_node)."},
+            {"name": "scope", "in": "query", "schema": {"type": "string"},
+             "description": "Scope: pool, task, or task_id for stop."},
+        ],
+    )
     @auth.decorators.check_api(["runtime.plugins"])
     def get(self):  # pylint: disable=R0911,R0912
         """ Process GET """

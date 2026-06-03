@@ -27,10 +27,14 @@ from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
 
 from tools import auth  # pylint: disable=E0401
 from tools import theme  # pylint: disable=E0401
-from tools import api_tools  # pylint: disable=E0401
+from tools import api_tools, register_openapi  # pylint: disable=E0401
 
 
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
+    @register_openapi(
+        name="List User Mode Roles",
+        description="List all user role assignments across all modes."
+    )
     @auth.decorators.check_api(["modes.users"])
     def get(self):  # pylint: disable=R0201
         """ Process GET """
@@ -59,6 +63,10 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
             "rows": result,
         }
 
+    @register_openapi(
+        name="Assign User Mode Role",
+        description="Assign a user to a role in a mode."
+    )
     @auth.decorators.check_api(["modes.users"])
     def post(self):  # pylint: disable=R0201
         """ Process POST """
@@ -80,6 +88,10 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         #
         return {"ok": True}
 
+    @register_openapi(
+        name="Remove User Mode Role",
+        description="Remove a user from a role in a mode."
+    )
     @auth.decorators.check_api(["modes.users"])
     def delete(self):  # pylint: disable=R0201
         """ Process DELETE """

@@ -19,12 +19,20 @@
 from flask import request
 
 from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
-from tools import auth, api_tools, db, config as c
+from tools import auth, api_tools, db, config as c, register_openapi
 from collections import defaultdict
 from ...models.users import Role
 
 
 class AdminAPI(api_tools.APIModeHandler):
+    @register_openapi(
+        name="Get User Project Permissions",
+        description="Get role-to-permission map for personal projects.",
+        parameters=[
+            {"name": "old_format", "in": "query", "schema": {"type": "boolean"},
+             "description": "Return legacy matrix format instead of role-map."},
+        ],
+    )
     @auth.decorators.check_api({
         "permissions": ["configuration.roles.user_project_permissions.view"],
         "recommended_roles": {
@@ -63,6 +71,18 @@ class AdminAPI(api_tools.APIModeHandler):
 
         return permissions_map, 200
 
+    @register_openapi(
+        name="Update User Project Permissions",
+        description="Set permissions for roles across personal or team projects.",
+        parameters=[
+            {"name": "team_projects", "in": "query", "schema": {"type": "boolean"},
+             "description": "Apply to team projects instead of personal projects."},
+            {"name": "create_role_if_not_exist", "in": "query", "schema": {"type": "boolean"},
+             "description": "Create missing roles automatically."},
+            {"name": "append_user_role", "in": "query", "schema": {"type": "boolean"},
+             "description": "Append role to existing users missing it."},
+        ],
+    )
     @auth.decorators.check_api({
         "permissions": ["configuration.roles.user_project_permissions.edit"],
         "recommended_roles": {

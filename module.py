@@ -761,6 +761,18 @@ class Module(module.ModuleModel):
         except Exception:  # pylint: disable=W0703
             log.warning("Could not register token rotation schedule", exc_info=True)
 
+        self._register_openapi()
+
+    def _register_openapi(self):
+        from tools import openapi_registry  # pylint: disable=C0415,E0401
+        from .api import v2 as api_v2
+        openapi_registry.register_plugin(
+            plugin_name="admin",
+            version=self.descriptor.metadata.get("version", "1.0.0"),
+            description="Admin panel APIs for user, project, role, permission, and runtime management",
+            api_module=api_v2,
+        )
+
     def deinit(self):  # pylint: disable=R0201
         """ De-init module """
         log.info("De-initializing module")

@@ -26,7 +26,7 @@ import yaml  # pylint: disable=E0401
 from pylon.core.tools import log  # pylint: disable=E0611,E0401
 
 from tools import auth  # pylint: disable=E0401
-from tools import api_tools  # pylint: disable=E0401
+from tools import api_tools, register_openapi  # pylint: disable=E0401
 
 from .plugin_config_schemas import SECTION_DEFINITIONS
 
@@ -134,6 +134,14 @@ def collect_section_entries(remote_runtimes, section_id, include_meta=False):
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     """ API """
 
+    @register_openapi(
+        name="Get Plugin Config Section Values",
+        description="Read current values for all fields in a config section.",
+        parameters=[
+            {"name": "section_id", "in": "path", "schema": {"type": "string"},
+             "description": "Config section identifier."},
+        ],
+    )
     @auth.decorators.check_api(["runtime.plugins"])
     def get(self, section_id):
         """ Read current values for all fields in the given section """
@@ -150,6 +158,14 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         )
         return {"values": values, "fields_meta": fields_meta}
 
+    @register_openapi(
+        name="Update Plugin Config Section Values",
+        description="Update values for fields in a config section.",
+        parameters=[
+            {"name": "section_id", "in": "path", "schema": {"type": "string"},
+             "description": "Config section identifier."},
+        ],
+    )
     @auth.decorators.check_api(["runtime.plugins"])
     def put(self, section_id):
         """ Update values for fields in the given section """
@@ -302,6 +318,14 @@ _PUBLIC_SECTIONS = {"resources"}
 class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     """ API — readable by any authenticated user for whitelisted sections """
 
+    @register_openapi(
+        name="Get Public Config Section Values",
+        description="Read config values for a public-readable section.",
+        parameters=[
+            {"name": "section_id", "in": "path", "schema": {"type": "string"},
+             "description": "Config section identifier (only public sections allowed)."},
+        ],
+    )
     def get(self, section_id):
         """ Read current values for a public-readable section """
         if section_id not in _PUBLIC_SECTIONS:

@@ -24,7 +24,7 @@ from flask import g, request
 
 from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
 
-from tools import auth, api_tools  # pylint: disable=E0401
+from tools import auth, api_tools, register_openapi  # pylint: disable=E0401
 
 
 def group_roles_by_permissions(auth_permissions, roles):
@@ -39,6 +39,13 @@ def group_roles_by_permissions(auth_permissions, roles):
 
 
 class AdminAPI(api_tools.APIModeHandler):
+    @register_openapi(
+        name="Get Mode Permissions",
+        description="Get permission matrix for a mode.",
+        parameters=[
+            {"name": "target_mode", "in": "path", "schema": {"type": "string"}}
+        ]
+    )
     @auth.decorators.check_api({
         "permissions": ["configuration.roles.permissions.view"],
         "recommended_roles": {
@@ -65,6 +72,13 @@ class AdminAPI(api_tools.APIModeHandler):
             } for permission in all_permissions]
         }
 
+    @register_openapi(
+        name="Update Mode Permissions",
+        description="Update permission assignments for a mode.",
+        parameters=[
+            {"name": "target_mode", "in": "path", "schema": {"type": "string"}}
+        ]
+    )
     @auth.decorators.check_api({
         "permissions": ["configuration.roles.permissions.edit"],
         "recommended_roles": {
@@ -88,6 +102,13 @@ class AdminAPI(api_tools.APIModeHandler):
             auth.remove_permission_from_role(*permission, mode=target_mode)
         return {"ok": True}
 
+    @register_openapi(
+        name="Sync Mode Permissions",
+        description="Sync default permissions to all shared projects.",
+        parameters=[
+            {"name": "target_mode", "in": "path", "schema": {"type": "string"}}
+        ]
+    )
     @auth.decorators.check_api({
         "permissions": ["configuration.roles.permissions.edit"],
         "recommended_roles": {
@@ -143,6 +164,13 @@ class AdminAPI(api_tools.APIModeHandler):
 
 
 class ProjectAPI(api_tools.APIModeHandler):
+    @register_openapi(
+        name="Get Project Permissions",
+        description="Get permission matrix for a project.",
+        parameters=[
+            {"name": "project_id", "in": "path", "schema": {"type": "integer"}}
+        ]
+    )
     @auth.decorators.check_api({
         "permissions": ["configuration.roles.permissions.view"],
         "recommended_roles": {
@@ -166,6 +194,13 @@ class ProjectAPI(api_tools.APIModeHandler):
             } for permission in all_permissions]
         }
 
+    @register_openapi(
+        name="Update Project Permissions",
+        description="Update permission assignments for a project.",
+        parameters=[
+            {"name": "project_id", "in": "path", "schema": {"type": "integer"}}
+        ]
+    )
     @auth.decorators.check_api({
         "permissions": ["configuration.roles.permissions.edit"],
         "recommended_roles": {
@@ -193,6 +228,13 @@ class ProjectAPI(api_tools.APIModeHandler):
 
 
 class PublicProjectAPI(api_tools.APIModeHandler):
+    @register_openapi(
+        name="Get Public Project Permissions",
+        description="Get permission matrix for the public project.",
+        parameters=[
+            {"name": "target_mode", "in": "path", "schema": {"type": "string"}}
+        ]
+    )
     @auth.decorators.check_api({
         "permissions": ["configuration.roles.permissions.view"],
         "recommended_roles": {
@@ -232,6 +274,13 @@ class PublicProjectAPI(api_tools.APIModeHandler):
             } for p in all_permissions]
         }
 
+    @register_openapi(
+        name="Update Public Project Permissions",
+        description="Update permission assignments for the public project.",
+        parameters=[
+            {"name": "target_mode", "in": "path", "schema": {"type": "string"}}
+        ]
+    )
     @auth.decorators.check_api({
         "permissions": ["configuration.roles.permissions.edit"],
         "recommended_roles": {
@@ -271,6 +320,13 @@ class PublicProjectAPI(api_tools.APIModeHandler):
 class SupportProjectAPI(api_tools.APIModeHandler):
     """API for managing Support Assistant project permissions."""
 
+    @register_openapi(
+        name="Get Support Project Permissions",
+        description="Get permission matrix for the support assistant project.",
+        parameters=[
+            {"name": "target_mode", "in": "path", "schema": {"type": "string"}}
+        ]
+    )
     @auth.decorators.check_api({
         "permissions": ["configuration.roles.permissions.view"],
         "recommended_roles": {
@@ -309,6 +365,13 @@ class SupportProjectAPI(api_tools.APIModeHandler):
             } for p in all_permissions]
         }
 
+    @register_openapi(
+        name="Update Support Project Permissions",
+        description="Update permission assignments for the support assistant project.",
+        parameters=[
+            {"name": "target_mode", "in": "path", "schema": {"type": "string"}}
+        ]
+    )
     @auth.decorators.check_api({
         "permissions": ["configuration.roles.permissions.edit"],
         "recommended_roles": {

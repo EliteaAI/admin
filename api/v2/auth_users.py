@@ -22,12 +22,24 @@ import flask  # pylint: disable=E0401,W0611
 from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
 
 from tools import auth  # pylint: disable=E0401
-from tools import api_tools  # pylint: disable=E0401
+from tools import api_tools, register_openapi  # pylint: disable=E0401
 
 
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     """ API """
 
+    @register_openapi(
+        name="List Auth Users",
+        description="List auth users with pagination and search.",
+        parameters=[
+            {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 20}},
+            {"name": "offset", "in": "query", "schema": {"type": "integer", "default": 0}},
+            {"name": "search", "in": "query", "schema": {"type": "string"}},
+            {"name": "user_type", "in": "query", "schema": {"type": "string"}},
+            {"name": "sort_by", "in": "query", "schema": {"type": "string", "default": "name"}},
+            {"name": "sort_order", "in": "query", "schema": {"type": "string", "default": "asc"}}
+        ]
+    )
     @auth.decorators.check_api(["admin.auth.users"])
     def get(self):
         """ Process GET """
@@ -46,6 +58,10 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         #
         return result
 
+    @register_openapi(
+        name="Auth Users Action",
+        description="Perform user actions: delete, create, or set_admin_role."
+    )
     @auth.decorators.check_api(["admin.auth.users"])
     def post(self):  # pylint: disable=R0912,R0914,R0915
         """ Process POST """

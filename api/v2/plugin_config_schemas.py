@@ -24,7 +24,7 @@ import flask  # pylint: disable=E0401,W0611
 from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
 
 from tools import auth  # pylint: disable=E0401
-from tools import api_tools  # pylint: disable=E0401
+from tools import api_tools, register_openapi  # pylint: disable=E0401
 
 
 SECTION_DEFINITIONS = {
@@ -119,6 +119,10 @@ SECTION_DEFINITIONS = {
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     """ API """
 
+    @register_openapi(
+        name="Get Admin Config Schemas",
+        description="Collect admin_schema fields from all active pylons, grouped by section.",
+    )
     @auth.decorators.check_api(["runtime.plugins"])
     def get(self):
         """ Collect admin_schema from all plugins across all active pylons """

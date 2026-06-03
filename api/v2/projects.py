@@ -20,10 +20,22 @@ import flask  # pylint: disable=E0401
 
 from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
 
-from tools import auth, api_tools  # pylint: disable=E0401
+from tools import auth, api_tools, register_openapi  # pylint: disable=E0401
 
 
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903,C0115
+    @register_openapi(
+        name="List All Projects (Admin)",
+        description="List all projects with pagination, filtering, and admin metadata.",
+        parameters=[
+            {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 20}},
+            {"name": "offset", "in": "query", "schema": {"type": "integer", "default": 0}},
+            {"name": "search", "in": "query", "schema": {"type": "string"}},
+            {"name": "sort_by", "in": "query", "schema": {"type": "string", "default": "name"}},
+            {"name": "sort_order", "in": "query", "schema": {"type": "string", "default": "asc"}},
+            {"name": "project_type", "in": "query", "schema": {"type": "string"}},
+        ],
+    )
     @auth.decorators.check_api({
         "permissions": ["projects.projects.projects.view"],
         "recommended_roles": {

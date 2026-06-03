@@ -23,13 +23,28 @@ import flask
 from pydantic import ValidationError
 
 from pylon.core.tools import log
-from tools import auth, api_tools, db
+from tools import auth, api_tools, db, register_openapi
 
 from ...models.moderation import ModerationState
 from ...models.pd.moderation import ModerationStateListQuery, ModerationStateListResponse, ModerationStateResponse
 
 
 class AdminAPI(api_tools.APIModeHandler):
+    @register_openapi(
+        name="List Moderation Statuses",
+        description="List all moderation statuses with pagination and filtering.",
+        parameters=[
+            {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 20}},
+            {"name": "offset", "in": "query", "schema": {"type": "integer", "default": 0}},
+            {"name": "search", "in": "query", "schema": {"type": "string"}},
+            {"name": "status", "in": "query", "schema": {"type": "string"}},
+            {"name": "issue_type", "in": "query", "schema": {"type": "string"}},
+            {"name": "project_id", "in": "query", "schema": {"type": "integer"}},
+            {"name": "entity_id", "in": "query", "schema": {"type": "string"}},
+            {"name": "sort_by", "in": "query", "schema": {"type": "string", "default": "created_at"}},
+            {"name": "sort_order", "in": "query", "schema": {"type": "string", "default": "desc"}}
+        ]
+    )
     @auth.decorators.check_api({
         "permissions": ["admin.moderation"],
         "recommended_roles": {

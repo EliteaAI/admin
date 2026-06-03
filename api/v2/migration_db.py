@@ -23,7 +23,7 @@ import psycopg2  # pylint: disable=E0401,W0611
 from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
 
 from tools import auth  # pylint: disable=E0401
-from tools import api_tools  # pylint: disable=E0401
+from tools import api_tools, register_openapi  # pylint: disable=E0401
 from tools import context  # pylint: disable=E0401
 from tools import constants as c  # pylint: disable=E0401
 
@@ -31,6 +31,10 @@ from tools import constants as c  # pylint: disable=E0401
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     """ API """
 
+    @register_openapi(
+        name="Run DB Migration SQLs",
+        description="Execute SQL migrations across all project schemas."
+    )
     @auth.decorators.check_api(["migration.db"])
     def post(self):  # pylint: disable=R0912,R0914
         """ Process POST """

@@ -22,12 +22,16 @@ import flask  # pylint: disable=E0401,W0611
 from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
 
 from tools import auth  # pylint: disable=E0401
-from tools import api_tools  # pylint: disable=E0401
+from tools import api_tools, register_openapi  # pylint: disable=E0401
 
 
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     """ API """
 
+    @register_openapi(
+        name="Invite User",
+        description="Invite a new user by email and name.",
+    )
     @auth.decorators.check_api(["modes.users"])
     def post(self):
         """ Process POST """

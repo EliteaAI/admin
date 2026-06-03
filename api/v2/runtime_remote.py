@@ -27,12 +27,16 @@ import flask  # pylint: disable=E0401,W0611
 from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
 
 from tools import auth  # pylint: disable=E0401
-from tools import api_tools  # pylint: disable=E0401
+from tools import api_tools, register_openapi  # pylint: disable=E0401
 
 
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     """ API """
 
+    @register_openapi(
+        name="List Remote Runtime Plugins",
+        description="List all plugins across all active remote pylons.",
+    )
     @auth.decorators.check_api(["runtime.plugins"])
     def get(self):
         """ Process GET """
@@ -67,6 +71,10 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
             "rows": result,
         }
 
+    @register_openapi(
+        name="Remote Plugin Actions",
+        description="Update, delete, reload plugins or export/import configs across pylons.",
+    )
     @auth.decorators.check_api(["runtime.plugins"])
     def post(self):  # pylint: disable=R0912,R0915,R0914
         """ Process POST """

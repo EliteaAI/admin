@@ -23,12 +23,22 @@ import yaml  # pylint: disable=E0401
 from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
 
 from tools import auth  # pylint: disable=E0401
-from tools import api_tools  # pylint: disable=E0401
+from tools import api_tools, register_openapi  # pylint: disable=E0401
 
 
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     """ API """
 
+    @register_openapi(
+        name="Get Remote Plugin Config",
+        description="Get config for a remote pylon or plugin. Use 'pylon_id' for pylon-level or 'pylon_id:plugin_name' for plugin-level.",
+        parameters=[
+            {"name": "plugin_id", "in": "path", "schema": {"type": "string"},
+             "description": "Pylon ID or 'pylon_id:plugin_name'."},
+            {"name": "raw", "in": "query", "schema": {"type": "boolean", "default": False},
+             "description": "Return raw YAML instead of parsed config."},
+        ],
+    )
     @auth.decorators.check_api(["runtime.plugins"])
     def get(self, plugin_id):
         """ Process GET """
@@ -75,6 +85,14 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         #
         return {"config": ""}
 
+    @register_openapi(
+        name="Update Remote Plugin Config",
+        description="Update config for a remote pylon or plugin.",
+        parameters=[
+            {"name": "plugin_id", "in": "path", "schema": {"type": "string"},
+             "description": "Pylon ID or 'pylon_id:plugin_name'."},
+        ],
+    )
     @auth.decorators.check_api(["runtime.plugins"])
     def post(self, plugin_id):
         """ Process POST """

@@ -23,12 +23,22 @@ import yaml  # pylint: disable=E0401
 from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
 
 from tools import auth  # pylint: disable=E0401
-from tools import api_tools  # pylint: disable=E0401
+from tools import api_tools, register_openapi  # pylint: disable=E0401
 
 
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     """ API """
 
+    @register_openapi(
+        name="Get Pylon Config",
+        description="Get the active or tunable config for a pylon.",
+        parameters=[
+            {"name": "target_pylon_id", "in": "path", "schema": {"type": "string"},
+             "description": "Target pylon identifier."},
+            {"name": "raw", "in": "query", "schema": {"type": "boolean", "default": False},
+             "description": "Return raw tunable YAML instead of active config."},
+        ],
+    )
     @auth.decorators.check_api(["runtime.plugins"])
     def get(self, target_pylon_id):
         """ Process GET """
@@ -48,6 +58,14 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         #
         return {"config": ""}
 
+    @register_openapi(
+        name="Pylon Config Action",
+        description="Restart a pylon or save its config. Actions: restart, save.",
+        parameters=[
+            {"name": "target_pylon_id", "in": "path", "schema": {"type": "string"},
+             "description": "Target pylon identifier."},
+        ],
+    )
     @auth.decorators.check_api(["runtime.plugins"])
     def post(self, target_pylon_id):
         """ Process POST """

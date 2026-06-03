@@ -27,10 +27,14 @@ from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
 
 from tools import auth  # pylint: disable=E0401
 from tools import theme  # pylint: disable=E0401
-from tools import api_tools  # pylint: disable=E0401
+from tools import api_tools, register_openapi  # pylint: disable=E0401
 
 
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
+    @register_openapi(
+        name="List Runtime Plugins",
+        description="List all currently running plugins on this pylon.",
+    )
     @auth.decorators.check_api(["runtime.plugins"])
     def get(self):  # pylint: disable=R0201
         """ Process GET """

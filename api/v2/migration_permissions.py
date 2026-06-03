@@ -22,12 +22,16 @@ import flask  # pylint: disable=E0401,W0611
 from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
 
 from tools import auth  # pylint: disable=E0401
-from tools import api_tools  # pylint: disable=E0401
+from tools import api_tools, register_openapi  # pylint: disable=E0401
 
 
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     """ API """
 
+    @register_openapi(
+        name="Migrate Permissions",
+        description="Add or delete permissions across projects. Supports modes: add_user_project_defaults, add_team_project_defaults, add_public_project_defaults, add_*_project_permissions, delete_*_project_permissions."
+    )
     @auth.decorators.check_api(["migration.permissions"])
     def post(self):  # pylint: disable=R0912,R0914,R0915
         """ Process POST """

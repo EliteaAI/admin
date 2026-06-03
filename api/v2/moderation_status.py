@@ -24,13 +24,18 @@ from datetime import datetime, timezone
 from pydantic import ValidationError
 
 from pylon.core.tools import log
-from tools import auth, api_tools, db
+from tools import auth, api_tools, db, register_openapi
 
 from ...models.moderation import ModerationState
 from ...models.pd.moderation import ModerationStateCreate, ModerationStateUpdate, ModerationStateResponse
 
 
 class AdminAPI(api_tools.APIModeHandler):
+    @register_openapi(
+        name="Update Moderation Status",
+        description="Update a moderation status entry (approve/reject).",
+        request_body=ModerationStateUpdate
+    )
     @auth.decorators.check_api({
         "permissions": ["admin.moderation.edit"],
         "recommended_roles": {
@@ -104,6 +109,15 @@ class AdminAPI(api_tools.APIModeHandler):
 
 
 class DefaultAPI(api_tools.APIModeHandler):
+    @register_openapi(
+        name="Get Entity Moderation Status",
+        description="Get moderation statuses for an entity.",
+        parameters=[
+            {"name": "project_id", "in": "path", "schema": {"type": "integer"}},
+            {"name": "entity_id", "in": "path", "schema": {"type": "string"}},
+            {"name": "issue_type", "in": "query", "schema": {"type": "string"}}
+        ]
+    )
     @auth.decorators.check_api({
         "permissions": ["admin.moderation.view"],
         "recommended_roles": {
@@ -147,6 +161,15 @@ class DefaultAPI(api_tools.APIModeHandler):
 
             return {"total": len(rows), "rows": rows}, 200
 
+    @register_openapi(
+        name="Create Moderation Status",
+        description="Submit a moderation request for an entity.",
+        parameters=[
+            {"name": "project_id", "in": "path", "schema": {"type": "integer"}},
+            {"name": "entity_id", "in": "path", "schema": {"type": "string"}}
+        ],
+        request_body=ModerationStateCreate
+    )
     @auth.decorators.check_api({
         "permissions": ["admin.moderation.create"],
         "recommended_roles": {

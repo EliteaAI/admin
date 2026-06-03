@@ -23,13 +23,21 @@ from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
 from pylon.core.tools import config  # pylint: disable=E0611,E0401,W0611
 
 from tools import auth  # pylint: disable=E0401
-from tools import api_tools  # pylint: disable=E0401
+from tools import api_tools, register_openapi  # pylint: disable=E0401
 from tools import context  # pylint: disable=E0401
 
 
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     """ API """
 
+    @register_openapi(
+        name="Get Pylon Splash Template",
+        description="Get the maintenance splash screen template for a pylon.",
+        parameters=[
+            {"name": "target_pylon_id", "in": "path", "schema": {"type": "string"},
+             "description": "Target pylon identifier (must match current pylon)."},
+        ],
+    )
     @auth.decorators.check_api(["runtime.plugins"])
     def get(self, target_pylon_id):
         """ Process GET """
@@ -38,6 +46,14 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         #
         return {"splash": config.tunable_get("splash_template", b"").decode()}
 
+    @register_openapi(
+        name="Save Pylon Splash Template",
+        description="Save the maintenance splash screen template for a pylon.",
+        parameters=[
+            {"name": "target_pylon_id", "in": "path", "schema": {"type": "string"},
+             "description": "Target pylon identifier (must match current pylon)."},
+        ],
+    )
     @auth.decorators.check_api(["runtime.plugins"])
     def post(self, target_pylon_id):
         """ Process POST """

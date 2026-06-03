@@ -24,12 +24,20 @@ from flask import g, request
 from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
 from sqlalchemy import schema
 
-from tools import auth, db, api_tools  # pylint: disable=E0401
+from tools import auth, db, api_tools, register_openapi  # pylint: disable=E0401
 
 from ...utils import filter_restricted_roles
 
 
 class AdminAPI(api_tools.APIModeHandler):
+    @register_openapi(
+        name="Get Mode Roles",
+        description="List roles for a mode.",
+        parameters=[
+            {"name": "target_mode", "in": "path", "schema": {"type": "string"},
+             "description": "Target mode (e.g. administration, default)."},
+        ],
+    )
     @auth.decorators.check_api({
         "permissions": ["configuration.roles.roles.view"],
         "recommended_roles": {
@@ -41,6 +49,14 @@ class AdminAPI(api_tools.APIModeHandler):
         roles = auth.get_roles(target_mode)
         return filter_restricted_roles(roles)
     
+    @register_openapi(
+        name="Create Mode Role",
+        description="Create a new role in a mode.",
+        parameters=[
+            {"name": "target_mode", "in": "path", "schema": {"type": "string"},
+             "description": "Target mode."},
+        ],
+    )
     @auth.decorators.check_api({
         "permissions": ["configuration.roles.roles.create"],
         "recommended_roles": {
@@ -54,6 +70,14 @@ class AdminAPI(api_tools.APIModeHandler):
         auth.add_role(name=role_name, mode=target_mode)
         return {"ok": True}
 
+    @register_openapi(
+        name="Rename Mode Role",
+        description="Rename a role in a mode.",
+        parameters=[
+            {"name": "target_mode", "in": "path", "schema": {"type": "string"},
+             "description": "Target mode."},
+        ],
+    )
     @auth.decorators.check_api({
         "permissions": ["configuration.roles.roles.edit"],
         "recommended_roles": {
@@ -66,6 +90,14 @@ class AdminAPI(api_tools.APIModeHandler):
         auth.update_role_name(name, new_name, target_mode)
         return {"ok": True}
 
+    @register_openapi(
+        name="Delete Mode Role",
+        description="Delete a role from a mode.",
+        parameters=[
+            {"name": "target_mode", "in": "path", "schema": {"type": "string"},
+             "description": "Target mode."},
+        ],
+    )
     @auth.decorators.check_api({
         "permissions": ["configuration.roles.roles.delete"],
         "recommended_roles": {
@@ -80,11 +112,27 @@ class AdminAPI(api_tools.APIModeHandler):
 
 
 class ProjectAPI(api_tools.APIModeHandler):
+    @register_openapi(
+        name="Get Project Roles",
+        description="List roles for a project.",
+        parameters=[
+            {"name": "project_id", "in": "path", "schema": {"type": "integer"},
+             "description": "Project identifier."},
+        ],
+    )
     @auth.decorators.check_api(["configuration.roles.roles.view"])
     def get(self, project_id: int):
         roles = self.module.get_roles(project_id)
         return filter_restricted_roles(roles)
 
+    @register_openapi(
+        name="Create Project Role",
+        description="Create a new role in a project.",
+        parameters=[
+            {"name": "project_id", "in": "path", "schema": {"type": "integer"},
+             "description": "Project identifier."},
+        ],
+    )
     @auth.decorators.check_api(["configuration.roles.roles.create"])
     def post(self, project_id: int):  # pylint: disable=R0201
         """ Process """
@@ -92,12 +140,28 @@ class ProjectAPI(api_tools.APIModeHandler):
         role = self.module.add_role(project_id=project_id, role_names=[role_name])
         return {"ok": bool(role)}, 201
 
+    @register_openapi(
+        name="Rename Project Role",
+        description="Rename a role in a project.",
+        parameters=[
+            {"name": "project_id", "in": "path", "schema": {"type": "integer"},
+             "description": "Project identifier."},
+        ],
+    )
     @auth.decorators.check_api(["configuration.roles.roles.edit"])
     def put(self, project_id):
         name, new_name = request.json["name"], request.json["new_name"]
         result = self.module.update_role_name(project_id, name, new_name)
         return {"ok": result}, 200
 
+    @register_openapi(
+        name="Delete Project Role",
+        description="Delete a role from a project.",
+        parameters=[
+            {"name": "project_id", "in": "path", "schema": {"type": "integer"},
+             "description": "Project identifier."},
+        ],
+    )
     @auth.decorators.check_api(["configuration.roles.roles.delete"]) 
     def delete(self, project_id):
         role_name = request.json["name"]

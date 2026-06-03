@@ -24,12 +24,22 @@ import flask  # pylint: disable=E0401,W0611
 from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
 
 from tools import auth  # pylint: disable=E0401
-from tools import api_tools  # pylint: disable=E0401
+from tools import api_tools, register_openapi  # pylint: disable=E0401
 
 
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     """ API """
 
+    @register_openapi(
+        name="Get Admin Tasks",
+        description="List, start, stop tasks or get task logs/names. Actions: list, start, stop, logs, names.",
+        parameters=[
+            {"name": "action", "in": "query", "schema": {"type": "string", "default": "list"},
+             "description": "Action: list, start, stop, logs, names."},
+            {"name": "scope", "in": "query", "schema": {"type": "string"},
+             "description": "Task scope or ID depending on action."},
+        ],
+    )
     @auth.decorators.check_api(["runtime.plugins"])
     def get(self):  # pylint: disable=R0911,R0912
         """ Process GET """
