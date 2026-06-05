@@ -98,9 +98,16 @@ SECTION_DEFINITIONS = {
         "description": "Enable the in-app support assistant widget for all users.",
         "always_visible": True,
     },
+    "voice_features": {
+        "title": "Voice Features",
+        "order": 90,
+        "icon": "record_voice_over",
+        "description": "Control Voice-to-Voice, Text-to-Voice, and Voice-to-Text features environment-wide.",
+        "always_visible": True,
+    },
     "maintenance": {
         "title": "Maintenance",
-        "order": 90,
+        "order": 91,
         "icon": "construction",
         "description": "Enable maintenance mode to show a splash screen to all non-admin users.",
         "always_visible": True,
