@@ -185,6 +185,18 @@ class RPC:
                 return []
         return auth.check_user_in_projects(project_ids, user_id)
 
+    @web.rpc('admin_get_user_private_project', 'get_user_private_project')
+    def get_user_private_project(self, user_id: int, **kwargs) -> Optional[dict]:
+        from plugins.projects.models.project import Project
+        from tools import db
+        with db.with_project_schema_session(None) as session:
+            project = session.query(Project).filter(
+                Project.name == f"project_user_{user_id}"
+            ).first()
+            if not project:
+                return None
+        return project
+
     @web.rpc('admin_get_project_system_user', 'get_project_system_user')
     def get_project_system_user(self, project_id: int, **kwargs) -> Optional[dict]:
         from tools import project_constants as pc
