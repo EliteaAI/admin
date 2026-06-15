@@ -89,7 +89,7 @@
                 <table class="table table-borderless"
                     id="table"
                     data-toggle="table"
-                    data-url="{{ tools.context.url_prefix }}/api/v1/admin/runtime_remote/administration"
+                    data-url="{{ tools.context.url_prefix }}/api/v2/admin/runtime_remote/administration"
                     data-pagination="false"
                     data-click-to-select="false"
                   >
@@ -115,7 +115,7 @@
 
 </div>
 
-<form id="form-export-configs" style="display: none;" method="post" action="{{ tools.context.url_prefix }}/api/v1/admin/runtime_remote/administration" target="_blank">
+<form id="form-export-configs" style="display: none;" method="post" action="{{ tools.context.url_prefix }}/api/v2/admin/runtime_remote/administration" target="_blank">
   <input type="hidden" id="form-export-configs-data" name="data" value="">
   <input type="hidden" name="action" value="export_configs">
 </form>
@@ -202,8 +202,8 @@
 </div> <!-- modal -->
 
 <script>
-  var remote_api_url = "{{ tools.context.url_prefix }}/api/v1/admin/runtime_remote/administration";
-  var remote_edit_api_url = "{{ tools.context.url_prefix }}/api/v1/admin/runtime_remote_config/administration";
+  var remote_api_url = "{{ tools.context.url_prefix }}/api/v2/admin/runtime_remote/administration";
+  var remote_edit_api_url = "{{ tools.context.url_prefix }}/api/v2/admin/runtime_remote_config/administration";
   var edit_config_row = {};
 </script>
 

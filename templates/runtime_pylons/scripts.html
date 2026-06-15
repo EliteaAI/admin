@@ -21,7 +21,7 @@
                 <table class="table table-borderless"
                     id="table"
                     data-toggle="table"
-                    data-url="{{ tools.context.url_prefix }}/api/v1/admin/runtime_pylons/administration"
+                    data-url="{{ tools.context.url_prefix }}/api/v2/admin/runtime_pylons/administration"
                     data-pagination="false"
                     data-click-to-select="false"
                   >
@@ -156,13 +156,13 @@
 </div> <!-- modal -->
 
 <script>
-  var logs_api_url = "{{ tools.context.url_prefix }}/api/v1/admin/runtime_pylons/administration";
+  var logs_api_url = "{{ tools.context.url_prefix }}/api/v2/admin/runtime_pylons/administration";
   var logs_row = {};
   //
-  var config_api_url = "{{ tools.context.url_prefix }}/api/v1/admin/runtime_pylons_config/administration";
+  var config_api_url = "{{ tools.context.url_prefix }}/api/v2/admin/runtime_pylons_config/administration";
   var config_row = {};
   //
-  var splash_api_url = "{{ tools.context.url_prefix }}/api/v1/admin/runtime_pylons_splash/administration";
+  var splash_api_url = "{{ tools.context.url_prefix }}/api/v2/admin/runtime_pylons_splash/administration";
   var splash_row = {};
 </script>
 

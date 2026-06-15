@@ -36,7 +36,7 @@
         <table class="table table-borderless"
             id="table"
             data-toggle="table"
-            data-url="{{ tools.context.url_prefix }}/api/v1/admin/projects/administration"
+            data-url="{{ tools.context.url_prefix }}/api/v2/admin/projects/administration"
             data-unique-id="id"
             data-pagination="false"
           >
@@ -66,7 +66,7 @@
 <script src="{{ url_for('admin.static', filename='js/vendor/axios.min.js') }}"></script>
 
 <script>
-  var invites_bulkprojects_api_url = "{{ tools.context.url_prefix }}/api/v1/admin/invites_bulkprojects/administration";
+  var invites_bulkprojects_api_url = "{{ tools.context.url_prefix }}/api/v2/admin/invites_bulkprojects/administration";
 </script>
 
 <script src="{{ url_for('admin.static', filename='js/invites_bulkprojects.js') }}"></script>
