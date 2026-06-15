@@ -59,7 +59,7 @@ def delete_failed_projects(*args, **kwargs):
                 filter_={"create_success": False},
             )
             #
-            from plugins.projects.api.v1.project import delete_project
+            from plugins.projects.api.v2.project import delete_project
             from tools import this
             #
             for project in project_list:
@@ -130,7 +130,7 @@ def delete_ghost_users(*args, **kwargs):  # pylint: disable=W0613,R0914
     """Remove users who never logged in: delete their roles, personal projects, and user records. No params. Destructive."""
     from tools import auth, this  # pylint: disable=E0401,C0415
     from plugins.projects.rpc.poc import is_system_user  # pylint: disable=E0401,C0415
-    from plugins.projects.api.v1.project import delete_project  # pylint: disable=E0401,C0415
+    from plugins.projects.api.v2.project import delete_project  # pylint: disable=E0401,C0415
     #
     log.info("Getting project list")
     project_list = context.rpc_manager.timeout(120).project_list(

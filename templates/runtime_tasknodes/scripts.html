@@ -26,7 +26,7 @@
                 <table class="table table-borderless"
                     id="table-{{ item.plugin }}-pool"
                     data-toggle="table"
-                    data-url="{{ tools.context.url_prefix }}/api/v1/admin/runtime_tasknodes/administration/?node={{ item.task_node }}&scope=pool"
+                    data-url="{{ tools.context.url_prefix }}/api/v2/admin/runtime_tasknodes/administration/?node={{ item.task_node }}&scope=pool"
                     data-pagination="false"
                     data-click-to-select="false"
                   >
@@ -68,7 +68,7 @@
                 <table class="table table-borderless"
                     id="table-{{ item.plugin }}-task"
                     data-toggle="table"
-                    data-url="{{ tools.context.url_prefix }}/api/v1/admin/runtime_tasknodes/administration/?node={{ item.task_node }}&scope=task"
+                    data-url="{{ tools.context.url_prefix }}/api/v2/admin/runtime_tasknodes/administration/?node={{ item.task_node }}&scope=task"
                     data-pagination="false"
                     data-click-to-select="false"
                   >
@@ -130,7 +130,7 @@
 </div> <!-- modal -->
 
 <script>
-  var tasknodes_api_url = "{{ tools.context.url_prefix }}/api/v1/admin/runtime_tasknodes/administration/";
+  var tasknodes_api_url = "{{ tools.context.url_prefix }}/api/v2/admin/runtime_tasknodes/administration/";
   //
   var logs_row = {};
 </script>

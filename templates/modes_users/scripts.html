@@ -17,7 +17,7 @@
                 <table class="table table-borderless"
                     id="table"
                     data-toggle="table"
-                    data-url="{{ tools.context.url_prefix }}/api/v1/admin/modes/administration"
+                    data-url="{{ tools.context.url_prefix }}/api/v2/admin/modes/administration"
                     data-unique-id="id"
                     data-pagination="false"
                   >
@@ -59,7 +59,7 @@
 {% include "admin:modes_users/modal_create.html" %}
 
 <script>
-  var api_url = "{{ tools.context.url_prefix }}/api/v1/admin/modes/administration";
+  var api_url = "{{ tools.context.url_prefix }}/api/v2/admin/modes/administration";
 </script>
 
 <script src="{{ url_for('admin.static', filename='js/modes.js') }}"></script>
