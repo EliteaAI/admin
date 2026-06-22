@@ -71,7 +71,7 @@ class Slot:  # pylint: disable=E1101,R0903
             module_manager = self.context.module_manager
             #
             tasknodes = []
-            check_plugins = ["worker_client", "datasources", "applications"]
+            check_plugins = ["worker_client", "applications"]
             #
             for plugin_name in check_plugins:
                 if plugin_name in module_manager.modules:

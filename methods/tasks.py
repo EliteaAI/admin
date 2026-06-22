@@ -191,7 +191,7 @@ class Method:  # pylint: disable=E1101,R0903
                 "event_node": event_node_config,
                 "labels": {
                     "tasknode_task": f"id:{tasknode_task.id}",
-                    "stream_id": "",  # until datasources are updated or removed
+                    "stream_id": "",
                 }
             })
             #
