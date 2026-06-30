@@ -61,9 +61,9 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
     @auth.decorators.check_api({
         "permissions": ["configuration.users.users.view"],
         "recommended_roles": {
-            "administration": {"admin": True, "viewer": False, "editor": False},
-            "default": {"admin": True, "viewer": True, "editor": False},
-            "developer": {"admin": True, "viewer": False, "editor": False},
+            "administration": {"admin": True, "viewer": False, "editor": True},
+            "default": {"admin": True, "viewer": True, "editor": True},
+            "developer": {"admin": True, "viewer": False, "editor": True},
         }})
     @api_tools.endpoint_metrics
     def get(self, project_id: int, **kwargs):
