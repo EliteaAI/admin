@@ -605,6 +605,9 @@ class Module(module.ModuleModel):
                 "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
             }
         })
+        # Register PlatformStatus model for SQLAlchemy table auto-creation
+        from .models.platform_status import PlatformStatus  # noqa: F401
+        #
         # Init
         self.descriptor.init_all()
         #
