@@ -328,7 +328,6 @@ const RolesTable = {
 
                         <div class="custom-input custom-input_search custom-input_search__sm position-relative ml-2 mr-2">
                             <input type="text" placeholder="Search permissions" id="searchRole">
-                            <img src="${url_prefix}/design-system/static/assets/ico/search.svg" class="icon-search position-absolute">
                         </div>
                         <button v-show="!canEdit" type="button" class="btn btn-secondary btn-icon btn-icon__purple mr-2"
                             data-toggle="tooltip" data-placement="top" title="Edit roles"
