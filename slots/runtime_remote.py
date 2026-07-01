@@ -21,7 +21,6 @@
 from pylon.core.tools import web  # pylint: disable=E0611,E0401
 
 from tools import auth  # pylint: disable=E0401
-from tools import theme  # pylint: disable=E0401
 
 
 class Slot:  # pylint: disable=E1101,R0903
@@ -42,7 +41,7 @@ class Slot:  # pylint: disable=E1101,R0903
     """
 
     @web.slot("admin_runtime_remote_scripts")
-    @auth.decorators.check_slot(["runtime.plugins"], access_denied_reply=theme.access_denied_part)
+    @auth.decorators.check_slot(["runtime.plugins"], access_denied_reply=None)
     def _scripts(self, context, slot, payload):
         _ = slot, payload
         #
@@ -53,7 +52,7 @@ class Slot:  # pylint: disable=E1101,R0903
             )
 
     @web.slot("admin_runtime_pylons_scripts")
-    @auth.decorators.check_slot(["runtime.plugins"], access_denied_reply=theme.access_denied_part)
+    @auth.decorators.check_slot(["runtime.plugins"], access_denied_reply=None)
     def _pylons_scripts(self, context, slot, payload):
         _ = slot, payload
         #
@@ -63,7 +62,7 @@ class Slot:  # pylint: disable=E1101,R0903
             )
 
     @web.slot("admin_runtime_tasknodes_scripts")
-    @auth.decorators.check_slot(["runtime.plugins"], access_denied_reply=theme.access_denied_part)
+    @auth.decorators.check_slot(["runtime.plugins"], access_denied_reply=None)
     def _tasknodes_scripts(self, context, slot, payload):
         _ = slot, payload
         #

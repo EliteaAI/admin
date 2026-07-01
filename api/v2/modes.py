@@ -26,7 +26,6 @@ import flask_restful  # pylint: disable=E0401
 from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
 
 from tools import auth  # pylint: disable=E0401
-from tools import theme  # pylint: disable=E0401
 from tools import api_tools, register_openapi  # pylint: disable=E0401
 
 
@@ -42,7 +41,7 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         #
         users = self.module.context.rpc_manager.call.auth_list_users()
         #
-        for mode_key in theme.modes:
+        for mode_key in self.module.modes:
             for user in users:
                 user_roles = self.module.context.rpc_manager.call.auth_get_user_roles(
                     user["id"], mode_key

@@ -30,7 +30,6 @@ import flask_restful  # pylint: disable=E0401
 from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
 
 from tools import auth  # pylint: disable=E0401
-from tools import theme  # pylint: disable=E0401
 from tools import api_tools, register_openapi  # pylint: disable=E0401
 
 
