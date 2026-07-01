@@ -21,8 +21,10 @@ import flask  # pylint: disable=E0401
 
 from pylon.core.tools import log  # pylint: disable=E0611,E0401
 
-from tools import auth  # pylint: disable=E0401
+from tools import auth, db  # pylint: disable=E0401
 from tools import api_tools, register_openapi  # pylint: disable=E0401
+
+from ...services.platform_status import PlatformStatusService
 
 
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
@@ -47,6 +49,16 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         """ Reload plugins on a specific pylon """
         request_data = flask.request.get_json() or {}
         plugins = request_data.get("plugins", [])
+
+        # Extract user context
+        user_id = None
+        try:
+            user_id = flask.g.auth.id
+        except Exception:
+            pass
+
+        is_full_restart = not plugins
+
         #
         if plugins:
             log.info("Requesting plugin reload for pylon %s: %s", pylon_id, plugins)
@@ -59,6 +71,22 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
                 },
             )
         else:
+            # Create lifecycle flag with start_time set immediately
+            # (we set start_time here because the pylon_stopping event from target
+            # pylon may not reach us before it shuts down)
+            try:
+                with db.get_session() as session:
+                    PlatformStatusService.create_planned_event(
+                        session,
+                        pylon_id=pylon_id,
+                        event_type='restart',
+                        user_id=user_id,
+                        set_start_time=True,
+                    )
+                    session.commit()
+            except Exception as e:
+                log.warning("Failed to create lifecycle flag: %s", e)
+
             log.info("Requesting full restart for pylon: %s", pylon_id)
             self.module.context.event_manager.fire_event(
                 "bootstrap_runtime_update",
