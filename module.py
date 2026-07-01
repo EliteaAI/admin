@@ -605,6 +605,144 @@ class Module(module.ModuleModel):
                 "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
             }
         })
+        # Permissions previously seeded only via theme.register_*() calls — lifted here
+        # so they survive ThemeStub removal (Phase 2b).
+        auth.register_permissions({
+            "permissions": ["projects"],
+            "recommended_roles": {
+                "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+            }
+        })
+        auth.register_permissions({
+            "permissions": ["projects.projects"],
+            "recommended_roles": {
+                "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+            }
+        })
+        auth.register_permissions({
+            "permissions": ["configuration"],
+            "recommended_roles": {
+                "administration": {"super_admin": True, "admin": True, "viewer": True, "editor": True},
+                "default": {"super_admin": True, "admin": True, "viewer": True, "editor": True},
+                "developer": {"super_admin": True, "admin": True, "viewer": True, "editor": True},
+            }
+        })
+        auth.register_permissions({
+            "permissions": ["configuration.roles"],
+            "recommended_roles": {
+                "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+            }
+        })
+        auth.register_permissions({
+            "permissions": ["configuration.users"],
+            "recommended_roles": {
+                "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+            }
+        })
+        auth.register_permissions({
+            "permissions": ["modes"],
+            "recommended_roles": {
+                "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+            }
+        })
+        auth.register_permissions({
+            "permissions": ["modes.users"],
+            "recommended_roles": {
+                "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+            }
+        })
+        auth.register_permissions({
+            "permissions": ["runtime"],
+            "recommended_roles": {
+                "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+            }
+        })
+        auth.register_permissions({
+            "permissions": ["runtime.plugins"],
+            "recommended_roles": {
+                "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+            }
+        })
+        auth.register_permissions({
+            "permissions": ["migration"],
+            "recommended_roles": {
+                "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+            }
+        })
+        auth.register_permissions({
+            "permissions": ["migration.db"],
+            "recommended_roles": {
+                "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+            }
+        })
+        auth.register_permissions({
+            "permissions": ["migration.permissions"],
+            "recommended_roles": {
+                "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+            }
+        })
+        auth.register_permissions({
+            "permissions": ["invites"],
+            "recommended_roles": {
+                "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+            }
+        })
+        auth.register_permissions({
+            "permissions": ["invites.platform"],
+            "recommended_roles": {
+                "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+            }
+        })
+        auth.register_permissions({
+            "permissions": ["invites.bulkusers"],
+            "recommended_roles": {
+                "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+            }
+        })
+        auth.register_permissions({
+            "permissions": ["invites.bulkprojects"],
+            "recommended_roles": {
+                "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+            }
+        })
+        auth.register_permissions({
+            "permissions": ["admin.auth.users"],
+            "recommended_roles": {
+                "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+            }
+        })
         # Init
         self.descriptor.init_all()
         #
