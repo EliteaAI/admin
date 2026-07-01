@@ -21,7 +21,6 @@ from pylon.core.tools import log  # pylint: disable=E0611,E0401
 from pylon.core.tools import web  # pylint: disable=E0611,E0401
 
 from tools import auth  # pylint: disable=E0401
-from tools import theme  # pylint: disable=E0401
 
 
 class Slot:  # pylint: disable=E1101,R0903
@@ -42,18 +41,18 @@ class Slot:  # pylint: disable=E1101,R0903
     """
 
     @web.slot("admin_mode_projects_edit_content")
-    @auth.decorators.check_slot(["projects.projects"], access_denied_reply=theme.access_denied_part)
+    @auth.decorators.check_slot(["projects.projects"], access_denied_reply=None)
     def _project_edit_content(self, context, slot, payload):
         _ = slot
         #
         try:
             project = int(payload.request.args.get("project"))
         except:  # pylint: disable=W0702
-            return theme.access_denied_part
+            return ""
         #
         project_ids = [item["id"] for item in self.context.rpc_manager.call.project_list()]
         if project not in project_ids:
-            return theme.access_denied_part
+            return ""
         #
         # from tools import project_constants as pc
         # template = pc['PROJECT_SCHEMA_TEMPLATE']

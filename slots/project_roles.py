@@ -21,7 +21,6 @@
 from pylon.core.tools import web  # pylint: disable=E0611,E0401
 
 from tools import auth  # pylint: disable=E0401
-from tools import theme  # pylint: disable=E0401
 
 
 class Slot:  # pylint: disable=E1101,R0903
@@ -42,7 +41,7 @@ class Slot:  # pylint: disable=E1101,R0903
     """
 
     @web.slot("roles_content")
-    @auth.decorators.check_slot(["configuration.roles"], access_denied_reply=theme.access_denied_part)
+    @auth.decorators.check_slot(["configuration.roles"], access_denied_reply=None)
     def _projects_content(self, context, slot, payload):
         _ = slot, payload
         #
