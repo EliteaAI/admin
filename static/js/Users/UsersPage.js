@@ -200,7 +200,6 @@ const UsersPage = {
                     <div class="d-flex justify-content-end">
                         <div class="custom-input custom-input_search__sm position-relative mb-3 mr-2" style="">
                             <input id="searchUser" type="text" placeholder="User name or email">
-                            <img src="${url_prefix}/design-system/static/assets/ico/search.svg" class="icon-search position-absolute">
                         </div>
                         <button id="removeButton" type="button" :disabled="!canRemove" class="btn btn-secondary btn-icon btn-icon__purple"
                             @click="showConfirmModal = true">
