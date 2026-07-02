@@ -221,6 +221,8 @@ class Module(module.ModuleModel):
                 "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
             }
         })
+        # Register models for table auto-creation
+        from .models.platform_event import PlatformEvent  # noqa: F401
         # Init
         self.descriptor.init_all()
         #
