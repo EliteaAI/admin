@@ -16,6 +16,9 @@
 #   limitations under the License.
 
 """ Module """
+import time
+import threading
+
 from pylon.core.tools import log  # pylint: disable=E0401
 from pylon.core.tools import module  # pylint: disable=E0401
 
@@ -119,6 +122,8 @@ class Module(module.ModuleModel):
         # self.db.tbl = Holder()
         #
         self.remote_runtimes = {}
+        self._sweeper_stop = threading.Event()
+        self._sweeper_thread = None
 
     def init(self):
         """ Init module """
@@ -761,7 +766,23 @@ class Module(module.ModuleModel):
         except Exception:  # pylint: disable=W0703
             log.warning("Could not register token rotation schedule", exc_info=True)
 
+        self._start_runtime_sweeper()
         self._register_openapi()
+
+    def _start_runtime_sweeper(self):
+        """ Start background thread to evict stale remote_runtimes entries """
+        def _sweep():
+            while not self._sweeper_stop.wait(30):
+                now = time.time()
+                for pylon_id in list(self.remote_runtimes.keys()):
+                    data = self.remote_runtimes.get(pylon_id)
+                    if data and now - data.get("timestamp", 0) > 60:
+                        self.remote_runtimes.pop(pylon_id, None)
+        self._sweeper_thread = threading.Thread(
+            target=_sweep, daemon=True, name="remote-runtimes-sweeper",
+        )
+        self._sweeper_thread.start()
+        log.info("Started remote_runtimes sweeper (30s interval, 60s TTL)")
 
     def _register_openapi(self):
         from tools import openapi_registry  # pylint: disable=C0415,E0401
@@ -776,5 +797,8 @@ class Module(module.ModuleModel):
     def deinit(self):  # pylint: disable=R0201
         """ De-init module """
         log.info("De-initializing module")
+        self._sweeper_stop.set()
+        if self._sweeper_thread and self._sweeper_thread.is_alive():
+            self._sweeper_thread.join(timeout=5)
         # De-init
         # self.descriptor.deinit_all()
