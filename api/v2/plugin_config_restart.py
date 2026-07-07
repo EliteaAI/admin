@@ -25,6 +25,18 @@ from tools import auth  # pylint: disable=E0401
 from tools import api_tools, register_openapi  # pylint: disable=E0401
 
 
+def _set_audit_entity(pylon_id: str):
+    """Set entity context on the current span for audit trail."""
+    try:
+        from opentelemetry import trace
+        span = trace.get_current_span()
+        if span and span.is_recording():
+            span.set_attribute("entity.type", "pylon")
+            span.set_attribute("entity.name", pylon_id)
+    except Exception:
+        pass  # Tracing may not be enabled
+
+
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     """ API """
 
@@ -45,6 +57,8 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         }})
     def post(self, pylon_id):
         """ Reload plugins on a specific pylon """
+        _set_audit_entity(pylon_id)
+
         request_data = flask.request.get_json() or {}
         plugins = request_data.get("plugins", [])
         #
