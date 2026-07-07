@@ -25,7 +25,7 @@ from tools import auth  # pylint: disable=E0401
 from tools import api_tools, register_openapi  # pylint: disable=E0401
 
 
-TASK_NODE_PLUGINS = ["worker_client", "datasources", "applications"]
+TASK_NODE_PLUGINS = ["worker_client", "applications"]
 
 
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
