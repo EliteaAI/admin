@@ -23,7 +23,7 @@ from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
 from pylon.core.tools import config  # pylint: disable=E0611,E0401,W0611
 
 from tools import auth  # pylint: disable=E0401
-from tools import api_tools  # pylint: disable=E0401
+from tools import api_tools, register_openapi  # pylint: disable=E0401
 from tools import context  # pylint: disable=E0401
 
 
@@ -42,6 +42,10 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
             log.exception("Failed to read splash state")
         return False
 
+    @register_openapi(
+        name="Get Maintenance Status",
+        description="Get maintenance mode status and splash template."
+    )
     @auth.decorators.check_api(["runtime.plugins"])
     def get(self):
         """ Get maintenance status and splash template """
@@ -54,6 +58,10 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
             "pylon_id": context.id,
         }
 
+    @register_openapi(
+        name="Update Maintenance Settings",
+        description="Enable/disable maintenance mode or update splash template."
+    )
     @auth.decorators.check_api(["runtime.plugins"])
     def put(self):
         """ Update maintenance settings """
