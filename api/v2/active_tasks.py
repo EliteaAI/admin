@@ -22,10 +22,10 @@ import flask  # pylint: disable=E0401,W0611
 from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
 
 from tools import auth  # pylint: disable=E0401
-from tools import api_tools, register_openapi  # pylint: disable=E0401
+from tools import api_tools  # pylint: disable=E0401
 
 
-TASK_NODE_PLUGINS = ["worker_client", "applications"]
+TASK_NODE_PLUGINS = ["worker_client", "datasources", "applications"]
 
 
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
@@ -109,15 +109,6 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
             "tasks": tasks,
         }
 
-    @register_openapi(
-        name="Get Active Task Nodes",
-        description="List active task nodes and their pool/task state. Supports action=list|refresh|stop.",
-        parameters=[
-            {"name": "action", "in": "query", "schema": {"type": "string", "default": "list"}},
-            {"name": "node", "in": "query", "schema": {"type": "string"}},
-            {"name": "scope", "in": "query", "schema": {"type": "string"}}
-        ]
-    )
     @auth.decorators.check_api(["runtime.plugins"])
     def get(self):  # pylint: disable=R0911,R0912
         """ Process GET """
@@ -163,9 +154,17 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
             if task_node is None:
                 return {"ok": False, "error": "unknown node"}
             #
-            task_node.stop_task(scope)
+            log.info(
+                "admin.active_tasks: stopping task %s on node %s",
+                scope, node,
+            )
+            try:
+                task_node.stop_task(scope)
+            except Exception as exc:  # pylint: disable=W0703
+                log.exception("admin.active_tasks: stop_task failed")
+                return {"ok": False, "error": f"stop_task failed: {exc}"}
             #
-            return {"ok": True}
+            return {"ok": True, "task_id": scope}
         #
         return {"ok": False, "error": "unknown action"}
 
