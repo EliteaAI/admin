@@ -163,9 +163,17 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
             if task_node is None:
                 return {"ok": False, "error": "unknown node"}
             #
-            task_node.stop_task(scope)
+            log.info(
+                "admin.active_tasks: stopping task %s on node %s",
+                scope, node,
+            )
+            try:
+                task_node.stop_task(scope)
+            except Exception as exc:  # pylint: disable=W0703
+                log.exception("admin.active_tasks: stop_task failed")
+                return {"ok": False, "error": f"stop_task failed: {exc}"}
             #
-            return {"ok": True}
+            return {"ok": True, "task_id": scope}
         #
         return {"ok": False, "error": "unknown action"}
 

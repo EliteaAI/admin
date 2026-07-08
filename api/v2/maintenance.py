@@ -75,6 +75,7 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
                 "bootstrap_runtime_update",
                 {
                     "pylon_id": context.id,
+                    "broadcast": True,
                     "actions": [action],
                     "restart": False,
                 },
