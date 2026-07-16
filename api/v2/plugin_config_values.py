@@ -29,6 +29,8 @@ from tools import auth  # pylint: disable=E0401
 from tools import api_tools, register_openapi  # pylint: disable=E0401
 
 from .plugin_config_schemas import SECTION_DEFINITIONS
+from ...utils.config_validation import validate_config_value
+
 
 def get_nested(d, path):
     """ Get a value from a nested dict using dot-notation path """
@@ -235,6 +237,24 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
                         current_value = prop_def.get("default")
                     if value == current_value:
                         continue
+                    #
+                    try:
+                        validation_errors = validate_config_value(prop_def, value)
+                    except Exception:  # pylint: disable=W0718
+                        log.exception(
+                            "Invalid value schema for %s.%s", plugin_name, prop_key,
+                        )
+                        return {
+                            "error": f"Validation is unavailable for {prop_def.get('title', prop_key)}",
+                            "field": prop_key,
+                        }, 500
+                    if validation_errors:
+                        title = prop_def.get("title", prop_key)
+                        return {
+                            "error": f"Invalid {title}: {validation_errors[0]['message']}",
+                            "field": prop_key,
+                            "details": validation_errors,
+                        }, 400
                     #
                     target_key = (pylon_id, plugin_name)
                     if target_key not in targets:
