@@ -17,6 +17,8 @@
 
 """ API """
 
+import datetime
+
 import flask  # pylint: disable=E0401,W0611
 
 from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
@@ -26,6 +28,37 @@ from tools import api_tools, register_openapi  # pylint: disable=E0401
 
 
 TASK_NODE_PLUGINS = ["worker_client", "applications"]
+
+USER_INPUT_PREVIEW_LIMIT = 100
+
+
+def _parse_meta_fields(meta):
+    """ Extract first-class fields from the caller-supplied meta dict. """
+    if not isinstance(meta, dict):
+        return None, None, None
+    #
+    project_id = meta.get("project_id")
+    #
+    user_context = meta.get("user_context")
+    user_id = user_context.get("user_id") if isinstance(user_context, dict) else None
+    #
+    preview = meta.get("user_input_preview")
+    if isinstance(preview, str):
+        preview = preview[:USER_INPUT_PREVIEW_LIMIT]
+    else:
+        preview = None
+    #
+    return project_id, user_id, preview
+
+
+def _started_at(task_node, task_id):
+    """ Last-known state timestamp for a task, as ISO string (start-time proxy). """
+    event_data = task_node.state_events.get(task_id)
+    if event_data and "timestamp" in event_data:
+        ts = event_data["timestamp"]
+        if isinstance(ts, datetime.datetime):
+            return ts.isoformat()
+    return None
 
 
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
@@ -85,21 +118,31 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
                     })
             #
             for state in task_node.global_task_state.values():
-                meta = state.get("meta", None)
-                if meta is not None:
-                    meta = str(meta)
-                #
                 status = state.get("status", None)
                 if status == "stopped":
                     continue
                 #
+                task_id = state.get("task_id", None)
+                meta = state.get("meta", None)
+                #
+                project_id, user_id, user_input_preview = _parse_meta_fields(meta)
+                #
+                if meta is not None:
+                    meta = str(meta)
+                #
+                started_at = _started_at(task_node, task_id)
+                #
                 tasks.append({
-                    "task_id": state.get("task_id", None),
+                    "task_id": task_id,
                     "requestor": state.get("requestor", None),
                     "runner": state.get("runner", None),
                     "status": status,
                     "meta": meta,
                     "node": node_info["node"],
+                    "project_id": project_id,
+                    "user_id": user_id,
+                    "user_input_preview": user_input_preview,
+                    "started_at": started_at,
                 })
         #
         return {
