@@ -43,6 +43,10 @@ def indexer_migrate(*args, **kwargs):
                     "connection_str": kwargs["param"],
                 },
                 pool="index_maintenance",
+                meta={
+                    "task_name": "indexer_migrate",
+                    "user_input_preview": "vector index migration",
+                },
             )
             #
             log.info("Started remote task: %s", task_id)
