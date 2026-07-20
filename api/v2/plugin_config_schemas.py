@@ -174,8 +174,7 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
                     field_entry["key"] = prop_key
                     field_entry["plugin"] = plugin_name
                     field_entry["pylon_id"] = pylon_id
-                    #
-                    # Resolved via RPC to keep the value out of the schema file.
+                    
                     rpc_name = field_entry.pop("builtin_default_rpc", None)
                     if rpc_name:
                         if rpc_name not in builtin_default_cache:
