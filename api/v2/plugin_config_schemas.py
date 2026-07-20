@@ -135,6 +135,7 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         """ Collect admin_schema from all plugins across all active pylons """
         current_permissions = auth.resolve_permissions(mode="administration")
         sections = {}
+        builtin_default_cache = {}
         #
         for pylon_id in list(sorted(self.module.remote_runtimes.keys())):
             data = self.module.remote_runtimes[pylon_id]
@@ -173,6 +174,24 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
                     field_entry["key"] = prop_key
                     field_entry["plugin"] = plugin_name
                     field_entry["pylon_id"] = pylon_id
+                    
+                    rpc_name = field_entry.pop("builtin_default_rpc", None)
+                    if rpc_name:
+                        if rpc_name not in builtin_default_cache:
+                            try:
+                                builtin_default_cache[rpc_name] = getattr(
+                                    self.module.context.rpc_manager.timeout(5),
+                                    rpc_name,
+                                )()
+                            except Exception as exc:  # pylint: disable=W0703
+                                log.warning(
+                                    "Failed to resolve builtin_default via %s: %s",
+                                    rpc_name, exc,
+                                )
+                                builtin_default_cache[rpc_name] = None
+                        if builtin_default_cache[rpc_name] is not None:
+                            field_entry["builtin_default"] = builtin_default_cache[rpc_name]
+                    #
                     sections[section_id]["fields"].append(field_entry)
         #
         # Ensure always-visible sections are included
