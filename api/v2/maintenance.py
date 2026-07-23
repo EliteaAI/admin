@@ -42,6 +42,18 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
             log.exception("Failed to read splash state")
         return False
 
+    def _get_tasks_paused(self):
+        """ Check if new-task dispatch is paused on the main pylon """
+        try:
+            module_manager = self.module.context.module_manager
+            if "bootstrap" in module_manager.descriptors:
+                return module_manager.descriptors["bootstrap"].state.get(
+                    "tasks_paused", False,
+                )
+        except:  # pylint: disable=W0702
+            log.exception("Failed to read tasks_paused state")
+        return False
+
     @register_openapi(
         name="Get Maintenance Status",
         description="Get maintenance mode status and splash template."
@@ -54,6 +66,7 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         #
         return {
             "enabled": enabled,
+            "tasks_paused": self._get_tasks_paused(),
             "splash_template": splash_html,
             "pylon_id": context.id,
         }
@@ -81,6 +94,20 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
                 },
             )
         #
+        # Handle pause-new-tasks toggle (independent of the splash)
+        if "tasks_paused" in data:
+            action = "pause_tasks" if data["tasks_paused"] else "resume_tasks"
+            log.info("Task pause: %s", action)
+            self.module.context.event_manager.fire_event(
+                "bootstrap_runtime_update",
+                {
+                    "pylon_id": context.id,
+                    "broadcast": True,
+                    "actions": [action],
+                    "restart": False,
+                },
+            )
+        #
         # Handle splash template update
         if "splash_template" in data and data["splash_template"]:
             log.info("Saving splash template")
@@ -90,7 +117,7 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         #
         enabled = self._get_splash_enabled()
         #
-        return {"ok": True, "enabled": enabled}
+        return {"ok": True, "enabled": enabled, "tasks_paused": self._get_tasks_paused()}
 
 
 class API(api_tools.APIBase):  # pylint: disable=R0903
