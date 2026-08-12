@@ -51,6 +51,22 @@ def _parse_meta_fields(meta):
     return project_id, user_id, preview
 
 
+def _request_dump(module_manager, task_id):
+    """ Ask the pylon that owns this task for its stack. Read-only, never kills. """
+    if "worker_client" not in module_manager.modules:
+        return {"ok": False, "error": "worker_client plugin is not available"}
+    #
+    worker_client = module_manager.modules["worker_client"].module
+    #
+    log.info("admin.active_tasks: dumping stack of task %s", task_id)
+    #
+    try:
+        return worker_client.request_task_dump(task_id)
+    except Exception as exc:  # pylint: disable=W0703
+        log.exception("admin.active_tasks: stack dump failed")
+        return {"ok": False, "error": f"stack dump failed: {exc}"}
+
+
 def _started_at(task_node, task_id):
     """ Last-known state timestamp for a task, as ISO string (start-time proxy). """
     event_data = task_node.state_events.get(task_id)
@@ -154,7 +170,8 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
 
     @register_openapi(
         name="Get Active Task Nodes",
-        description="List active task nodes and their pool/task state. Supports action=list|refresh|stop.",
+        description="List active task nodes and their pool/task state. "
+                    "Supports action=list|refresh|stop|dump.",
         parameters=[
             {"name": "action", "in": "query", "schema": {"type": "string", "default": "list"}},
             {"name": "node", "in": "query", "schema": {"type": "string"}},
@@ -217,6 +234,14 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
                 return {"ok": False, "error": f"stop_task failed: {exc}"}
             #
             return {"ok": True, "task_id": scope}
+        #
+        # dump
+        #
+        if action == "dump":
+            if scope is None:
+                return {"ok": False, "error": "scope (task_id) not set"}
+            #
+            return _request_dump(self.module.context.module_manager, scope)
         #
         return {"ok": False, "error": "unknown action"}
 

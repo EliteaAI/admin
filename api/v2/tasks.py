@@ -32,10 +32,11 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
 
     @register_openapi(
         name="Get Admin Tasks",
-        description="List, start, stop tasks or get task logs/names. Actions: list, start, stop, logs, names.",
+        description="List, start, stop tasks, dump a task stack, "
+                    "or get task logs/names. Actions: list, start, stop, dump, logs, names.",
         parameters=[
             {"name": "action", "in": "query", "schema": {"type": "string", "default": "list"},
-             "description": "Action: list, start, stop, logs, names."},
+             "description": "Action: list, start, stop, dump, logs, names."},
             {"name": "scope", "in": "query", "schema": {"type": "string"},
              "description": "Task scope or ID depending on action."},
         ],
@@ -207,6 +208,34 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
             return {
                 "ok": True,
             }
+        #
+        # dump
+        #
+        if action == "dump":
+            if scope is None:
+                return {
+                    "ok": False,
+                    "error": "scope (task_id) not set",
+                }
+            #
+            if "worker_client" not in module_manager.modules:
+                return {
+                    "ok": False,
+                    "error": "worker_client plugin is not available",
+                }
+            #
+            log.info("admin.tasks: dumping stack of task %s", scope)
+            #
+            worker_client = module_manager.modules["worker_client"].module
+            #
+            try:
+                return worker_client.request_task_dump(scope)
+            except Exception as exc:  # pylint: disable=W0703
+                log.exception("admin.tasks: stack dump failed")
+                return {
+                    "ok": False,
+                    "error": f"stack dump failed: {exc}",
+                }
         #
         # logs
         #
