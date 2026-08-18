@@ -27,6 +27,7 @@ from centry_logging.handlers.eventnode import EventNodeLogHandler  # pylint: dis
 from tools import context, log, web  # pylint: disable=E0611,E0401
 
 from ..tasks import db_tasks
+from ..tasks import eval_tasks
 from ..tasks import indexer_tasks
 from ..tasks import project_tasks
 from ..tasks import mesh_tasks
@@ -124,6 +125,8 @@ class Method:  # pylint: disable=E1101,R0903
             ("mesh_get_plugin_frozen_requirements", mesh_tasks.mesh_get_plugin_frozen_requirements),
             #
             ("migrate_admin_to_super_admin", role_migration.migrate_admin_to_super_admin),
+            #
+            ("resync_platform_dimensions", eval_tasks.resync_platform_dimensions),
         ]
         #
         for task_name, task_func in local_admin_tasks:

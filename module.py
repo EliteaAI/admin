@@ -117,6 +117,29 @@ class Module(module.ModuleModel):
                 "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
             }
         })
+        # Platform-wide eval dimension catalog (§16.1)
+        for _eval_permission, _eval_admin_only in (
+            ("configuration.evaluation", False),
+            ("configuration.evaluation.platform_dimensions", False),
+            ("configuration.evaluation.platform_dimensions.view", False),
+            ("configuration.evaluation.platform_dimensions.create", True),
+            ("configuration.evaluation.platform_dimensions.edit", True),
+            ("configuration.evaluation.platform_dimensions.delete", True),
+        ):
+            _eval_roles = {
+                "super_admin": True,
+                "admin": True,
+                "viewer": not _eval_admin_only,
+                "editor": True,
+            }
+            auth.register_permissions({
+                "permissions": [_eval_permission],
+                "recommended_roles": {
+                    "administration": dict(_eval_roles),
+                    "default": dict(_eval_roles),
+                    "developer": dict(_eval_roles),
+                }
+            })
         auth.register_permissions({
             "permissions": ["configuration.users"],
             "recommended_roles": {
