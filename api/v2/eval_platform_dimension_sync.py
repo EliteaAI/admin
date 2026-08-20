@@ -28,13 +28,19 @@ from tools import auth, api_tools, register_openapi  # pylint: disable=E0401
 
 from .eval_platform_dimensions import _WRITE_ROLES, _call
 
+# Matches the bulk resync task's own budget (`tasks/eval_tasks.py`).
+_RESYNC_TIMEOUT = 600
+
 
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     """ API """
 
     @property
     def _rpc(self):
-        return self.module.context.rpc_manager.call
+        # The resync walks project schemas one at a time, so it needs the same headroom the bulk
+        # task gives itself (`tasks/eval_tasks.py`) — on the default timeout this returns a failure
+        # to the admin while the per-project commits are in fact still landing.
+        return self.module.context.rpc_manager.timeout(_RESYNC_TIMEOUT)
 
     @register_openapi(
         name="Sync Platform Eval Dimension To Projects",
