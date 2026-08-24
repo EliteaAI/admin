@@ -200,10 +200,10 @@ def _resolve_projects(project_ids):
 def suspend_projects_and_users(*args, **kwargs):  # pylint: disable=W0613,R0912,R0914,R0915
     """
         Suspend private projects with their owners, or team projects only.
-        Param: JSON object. scope: 'private_with_users' (selectors: user_ids/user_emails/
-        project_ids of personal projects) or 'team_projects' (project_ids only). Optional:
-        "all": true, reason, dry_run (default true). Reason is recorded in task logs only.
-        Destructive when dry_run=false.
+        Param: JSON object. scope: 'private_with_users' (selectors: user_ids, user_emails,
+        or project_ids of personal projects) or 'team_projects' (project_ids only).
+        Optional: "all": true, reason, dry_run (default true). Reason is recorded in task
+        logs only. Destructive when dry_run=false.
 
         Examples:
         {"scope": "team_projects", "project_ids": [12, 34], "dry_run": true}
