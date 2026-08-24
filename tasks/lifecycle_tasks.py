@@ -126,23 +126,20 @@ def is_protected_project(project, protected_project_ids):
 
 
 def _protected_project_ids():
-    """ Best-effort resolution of public/system project ids (AI/public project, support project) """
-    protected = set()
-    try:
-        from tools import elitea_config  # pylint: disable=E0401,C0415
-        #
-        protected.add(int(elitea_config.get("ai_project_id", 1)))
-    except Exception:  # pylint: disable=W0703
-        protected.add(1)
+    """
+        Resolve public/system project ids (AI/public project, support project) that must
+        never be suspended/deleted. Fails loudly rather than silently falling back to a
+        guessed id, since these tasks are destructive and under-protecting is unsafe.
+    """
+    from tools import elitea_config  # pylint: disable=E0401,C0415
     #
-    try:
-        if "support_assistant" in context.module_manager.modules:
-            support_config = context.rpc_manager.timeout(2).support_assistant_get_config()
-            support_project_id = support_config.get("project_id") if support_config else None
-            if support_project_id:
-                protected.add(int(support_project_id))
-    except Exception:  # pylint: disable=W0703
-        pass
+    protected = {int(elitea_config.get("ai_project_id", 1))}
+    #
+    if "support_assistant" in context.module_manager.modules:
+        support_config = context.rpc_manager.timeout(2).support_assistant_get_config()
+        support_project_id = support_config.get("project_id") if support_config else None
+        if support_project_id:
+            protected.add(int(support_project_id))
     #
     return protected
 
@@ -325,10 +322,12 @@ def suspend_projects_and_users(*args, **kwargs):  # pylint: disable=W0613,R0912,
                         processed += 1
                         skipped += 1
                         continue
-                    owner = (
-                        auth.get_user(user_id=project["owner_id"])
-                        if project.get("owner_id") else None
-                    )
+                    owner = None
+                    if project.get("owner_id"):
+                        try:
+                            owner = auth.get_user(user_id=project["owner_id"])
+                        except RuntimeError:
+                            owner = None
                     if owner:
                         users_by_id[int(owner["id"])] = owner
                     else:

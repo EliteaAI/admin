@@ -64,6 +64,188 @@ def lifecycle_tasks(plugin_root):
     return module
 
 
+class FakeCall:
+    """Dispatches attribute access to a dict of stub functions, mimicking rpc_manager.call.*"""
+
+    def __init__(self, funcs):
+        self._funcs = funcs
+
+    def __getattr__(self, name):
+        try:
+            return self._funcs[name]
+        except KeyError:
+            raise AttributeError(name)  # noqa: B904
+
+
+class FakeRpcManager:
+    def __init__(self, funcs):
+        self.call = FakeCall(funcs)
+
+    def timeout(self, _seconds):
+        return self.call
+
+
+class FakeQuery:
+    def __init__(self, projects_db, model):
+        self._projects_db = projects_db
+        self._model = model
+        self._project_id = None
+
+    def where(self, cond):
+        _kind, _field, value = cond
+        self._project_id = value
+        return self
+
+    def first(self):
+        if self._project_id not in self._projects_db:
+            return None
+        return FakeProjectRow(self._projects_db, self._project_id)
+
+
+class FakeProjectRow:
+    def __init__(self, projects_db, project_id):
+        self._projects_db = projects_db
+        self._project_id = project_id
+
+    @property
+    def suspended(self):
+        return self._projects_db[self._project_id]["suspended"]
+
+    @suspended.setter
+    def suspended(self, value):
+        self._projects_db[self._project_id]["suspended"] = value
+
+
+class FakeSession:
+    def __init__(self, projects_db):
+        self._projects_db = projects_db
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def query(self, model):
+        return FakeQuery(self._projects_db, model)
+
+    def commit(self):
+        pass
+
+
+@pytest.fixture
+def task_env(lifecycle_tasks):
+    """
+        Wire fresh fake RPC/auth/db/model stubs into the already-loaded lifecycle_tasks
+        module so the two task functions can be exercised end to end.
+    """
+    projects = {}  # project_id -> dict (id, name, owner_id, suspended)
+    users = {}  # user_id -> dict (id, email, suspended)
+    personal_project_by_user = {}  # user_id -> project_id
+    deleted_project_ids = []
+    removed_from_project = []
+
+    def project_get_by_id(project_id):
+        project = projects.get(project_id)
+        return dict(project) if project else None
+
+    def project_list(filter_=None):  # pylint: disable=unused-argument
+        return [dict(project) for project in projects.values()]
+
+    def projects_get_personal_project_id(user_id):
+        return personal_project_by_user.get(user_id)
+
+    def admin_check_user_in_projects(_project_ids, _user_id):
+        return []
+
+    def admin_remove_users_from_project(project_id, user_ids):
+        removed_from_project.append((project_id, list(user_ids)))
+
+    rpc_funcs = {
+        "project_get_by_id": project_get_by_id,
+        "project_list": project_list,
+        "projects_get_personal_project_id": projects_get_personal_project_id,
+        "admin_check_user_in_projects": admin_check_user_in_projects,
+        "admin_remove_users_from_project": admin_remove_users_from_project,
+    }
+
+    lifecycle_tasks.context.rpc_manager = FakeRpcManager(rpc_funcs)
+    lifecycle_tasks.context.module_manager = types.SimpleNamespace(modules={})
+
+    def list_users(user_ids=None):
+        if user_ids:
+            return [dict(u) for uid, u in users.items() if uid in user_ids]
+        return [dict(u) for u in users.values()]
+
+    def get_user(user_id=None, email=None, name=None):  # pylint: disable=unused-argument
+        if user_id is not None:
+            user = users.get(user_id)
+        else:
+            user = next((u for u in users.values() if u.get("email") == email), None)
+        if not user:
+            raise RuntimeError("User not found")
+        return dict(user)
+
+    def update_user(id_, name=None, last_login=None, suspended=None):  # pylint: disable=unused-argument
+        if suspended is not None:
+            users[id_]["suspended"] = suspended
+
+    def delete_user(user_id):
+        users.pop(user_id, None)
+
+    lifecycle_tasks.auth.list_users = list_users
+    lifecycle_tasks.auth.get_user = get_user
+    lifecycle_tasks.auth.update_user = update_user
+    lifecycle_tasks.auth.delete_user = delete_user
+
+    db_module = types.ModuleType("tools.db")
+    db_module.with_project_schema_session = lambda _project_id: FakeSession(projects)
+    sys.modules["tools"].db = db_module
+    sys.modules["tools.db"] = db_module
+
+    sys.modules["tools"].elitea_config = {"ai_project_id": 999}
+
+    class _Col:
+        def __init__(self, name):
+            self.name = name
+
+        def __eq__(self, other):
+            return ("eq", self.name, other)
+
+    project_model = types.SimpleNamespace(id=_Col("id"), suspended=_Col("suspended"))
+    models_project_module = types.ModuleType("plugins.projects.models.project")
+    models_project_module.Project = project_model
+    sys.modules["plugins.projects.models"] = types.ModuleType("plugins.projects.models")
+    sys.modules["plugins.projects.models.project"] = models_project_module
+
+    def delete_project(project_id, module):  # pylint: disable=unused-argument
+        deleted_project_ids.append(project_id)
+        projects.pop(project_id, None)
+
+    api_v2_project_module = types.ModuleType("plugins.projects.api.v2.project")
+    api_v2_project_module.delete_project = delete_project
+    sys.modules["plugins.projects.api"] = types.ModuleType("plugins.projects.api")
+    sys.modules["plugins.projects.api.v2"] = types.ModuleType("plugins.projects.api.v2")
+    sys.modules["plugins.projects.api.v2.project"] = api_v2_project_module
+
+    this_module = types.ModuleType("tools.this")
+    this_module.for_module = lambda _name: types.SimpleNamespace(module=None)
+    sys.modules["tools"].this = this_module
+    sys.modules["tools.this"] = this_module
+
+    return types.SimpleNamespace(
+        projects=projects,
+        users=users,
+        personal_project_by_user=personal_project_by_user,
+        deleted_project_ids=deleted_project_ids,
+        removed_from_project=removed_from_project,
+    )
+
+
+def _param(**kwargs):
+    return json.dumps(kwargs)
+
+
 class TestParseParam:
     def test_empty_param_returns_empty_dict(self, lifecycle_tasks):
         assert lifecycle_tasks.parse_param("") == {}
@@ -190,3 +372,127 @@ class TestResolveExecutingUserId:
 
     def test_non_numeric_auth_id_returns_none(self, lifecycle_tasks):
         assert lifecycle_tasks._resolve_executing_user_id("-") is None
+
+
+class TestSuspendTeamProjects:
+    def test_all_true_skips_protected_public_project(self, lifecycle_tasks, task_env):
+        """B5: a public/AI project (ai_project_id) must never be suspended, even with all=True."""
+        task_env.projects[999] = {"id": 999, "name": "public-project", "owner_id": 1, "suspended": False}
+        task_env.projects[2] = {"id": 2, "name": "acme-team", "owner_id": 3, "suspended": False}
+        #
+        lifecycle_tasks.suspend_projects_and_users(
+            param=_param(scope="team_projects", all=True, dry_run=False),
+            _executing_user_id="42",
+        )
+        #
+        assert task_env.projects[999]["suspended"] is False
+        assert task_env.projects[2]["suspended"] is True
+
+    def test_live_run_without_resolvable_executing_admin_raises(self, lifecycle_tasks, task_env):
+        """B2: '-' (token/non-user auth) must not crash; live runs must fail closed instead."""
+        task_env.projects[2] = {"id": 2, "name": "acme-team", "owner_id": 3, "suspended": False}
+        #
+        with pytest.raises(ValueError):
+            lifecycle_tasks.suspend_projects_and_users(
+                param=_param(scope="team_projects", project_ids=[2], dry_run=False),
+                _executing_user_id="-",
+            )
+        assert task_env.projects[2]["suspended"] is False
+
+    def test_dry_run_with_non_numeric_executing_admin_does_not_raise(self, lifecycle_tasks, task_env):
+        task_env.projects[2] = {"id": 2, "name": "acme-team", "owner_id": 3, "suspended": False}
+        #
+        lifecycle_tasks.suspend_projects_and_users(
+            param=_param(scope="team_projects", project_ids=[2], dry_run=True),
+            _executing_user_id="-",
+        )
+        assert task_env.projects[2]["suspended"] is False
+
+
+class TestSuspendPrivateWithUsers:
+    def test_project_ids_alone_resolve_to_owner_and_suspend(self, lifecycle_tasks, task_env):
+        """B1: project_ids must not be silently ignored under scope=private_with_users."""
+        task_env.users[10] = {"id": 10, "email": "owner@x.com", "suspended": False}
+        task_env.projects[101] = {"id": 101, "name": "project_user_10", "owner_id": 10, "suspended": False}
+        task_env.personal_project_by_user[10] = 101
+        #
+        lifecycle_tasks.suspend_projects_and_users(
+            param=_param(scope="private_with_users", project_ids=[101], dry_run=False),
+            _executing_user_id="99",
+        )
+        #
+        assert task_env.users[10]["suspended"] is True
+        assert task_env.projects[101]["suspended"] is True
+
+    def test_public_personal_project_is_protected(self, lifecycle_tasks, task_env):
+        """B5: the personal-project side must also respect protected project ids."""
+        task_env.users[10] = {"id": 10, "email": "owner@x.com", "suspended": False}
+        task_env.projects[999] = {"id": 999, "name": "project_user_10", "owner_id": 10, "suspended": False}
+        task_env.personal_project_by_user[10] = 999
+        #
+        lifecycle_tasks.suspend_projects_and_users(
+            param=_param(scope="private_with_users", user_ids=[10], dry_run=False),
+            _executing_user_id="99",
+        )
+        #
+        assert task_env.users[10]["suspended"] is False
+        assert task_env.projects[999]["suspended"] is False
+
+
+class TestDeleteUsersCascade:
+    def test_user_owning_team_project_is_skipped(self, lifecycle_tasks, task_env):
+        """M1: deleting a user who owns a team project would orphan ownership - must be skipped."""
+        task_env.users[10] = {"id": 10, "email": "owner@x.com", "suspended": False}
+        task_env.projects[101] = {"id": 101, "name": "project_user_10", "owner_id": 10, "suspended": False}
+        task_env.projects[2] = {"id": 2, "name": "acme-team", "owner_id": 10, "suspended": False}
+        task_env.personal_project_by_user[10] = 101
+        #
+        lifecycle_tasks.delete_users_with_private_projects_cascade(
+            param=_param(user_ids=[10], dry_run=False, confirm=True),
+            _executing_user_id="99",
+        )
+        #
+        assert 10 in task_env.users
+        assert 101 in task_env.projects
+        assert task_env.deleted_project_ids == []
+
+    def test_regular_user_is_deleted_with_personal_project(self, lifecycle_tasks, task_env):
+        task_env.users[10] = {"id": 10, "email": "owner@x.com", "suspended": False}
+        task_env.projects[101] = {"id": 101, "name": "project_user_10", "owner_id": 10, "suspended": False}
+        task_env.personal_project_by_user[10] = 101
+        #
+        lifecycle_tasks.delete_users_with_private_projects_cascade(
+            param=_param(user_ids=[10], dry_run=False, confirm=True),
+            _executing_user_id="99",
+        )
+        #
+        assert 10 not in task_env.users
+        assert task_env.deleted_project_ids == [101]
+
+    def test_public_personal_project_blocks_deletion(self, lifecycle_tasks, task_env):
+        """B5: a personal project that happens to be the protected public project id is never deleted."""
+        task_env.users[10] = {"id": 10, "email": "owner@x.com", "suspended": False}
+        task_env.projects[999] = {"id": 999, "name": "project_user_10", "owner_id": 10, "suspended": False}
+        task_env.personal_project_by_user[10] = 999
+        #
+        lifecycle_tasks.delete_users_with_private_projects_cascade(
+            param=_param(user_ids=[10], dry_run=False, confirm=True),
+            _executing_user_id="99",
+        )
+        #
+        assert 10 in task_env.users
+        assert 999 in task_env.projects
+        assert task_env.deleted_project_ids == []
+
+    def test_live_run_without_resolvable_executing_admin_raises(self, lifecycle_tasks, task_env):
+        """B2: '-' auth id must not crash the run; live delete must fail closed instead."""
+        task_env.users[10] = {"id": 10, "email": "owner@x.com", "suspended": False}
+        task_env.projects[101] = {"id": 101, "name": "project_user_10", "owner_id": 10, "suspended": False}
+        task_env.personal_project_by_user[10] = 101
+        #
+        with pytest.raises(ValueError):
+            lifecycle_tasks.delete_users_with_private_projects_cascade(
+                param=_param(user_ids=[10], dry_run=False, confirm=True),
+                _executing_user_id="-",
+            )
+        assert 10 in task_env.users
