@@ -200,10 +200,18 @@ def _resolve_projects(project_ids):
 def suspend_projects_and_users(*args, **kwargs):  # pylint: disable=W0613,R0912,R0914,R0915
     """
         Suspend private projects with their owners, or team projects only.
-        Param: JSON object, e.g. {"scope": "team_projects", "project_ids": [1,2], "dry_run": true}.
-        scope: 'private_with_users' (selectors: user_ids/user_emails/project_ids of personal
-        projects) or 'team_projects' (project_ids only). Optional: "all": true, reason, dry_run
-        (default true). Reason is recorded in task logs only. Destructive when dry_run=false.
+        Param: JSON object. scope: 'private_with_users' (selectors: user_ids/user_emails/
+        project_ids of personal projects) or 'team_projects' (project_ids only). Optional:
+        "all": true, reason, dry_run (default true). Reason is recorded in task logs only.
+        Destructive when dry_run=false.
+
+        Examples:
+        {"scope": "team_projects", "project_ids": [12, 34], "dry_run": true}
+        {"scope": "team_projects", "project_ids": [12], "dry_run": false, "reason": "abuse"}
+        {"scope": "team_projects", "all": true, "dry_run": true}
+        {"scope": "private_with_users", "user_emails": ["a@x.com"], "dry_run": true}
+        {"scope": "private_with_users", "user_ids": [77], "dry_run": false, "reason": "offboarding"}
+        {"scope": "private_with_users", "project_ids": [101], "dry_run": true}
     """
     from plugins.projects.models.project import Project  # pylint: disable=E0401,C0415
     from tools import db  # pylint: disable=E0401,C0415
@@ -410,11 +418,16 @@ def suspend_projects_and_users(*args, **kwargs):  # pylint: disable=W0613,R0912,
 def delete_users_with_private_projects_cascade(*args, **kwargs):  # pylint: disable=W0613,R0912,R0914
     """
         Permanently delete users, their personal project, and system user record, in cascade.
-        Param: JSON object, e.g. {"user_emails": ["a@x.com"], "dry_run": false, "confirm": true}.
-        Requires user_ids or user_emails (bulk delete-all is not supported). Users who own a team
-        project, or protected/system/executing-admin users, are skipped rather than orphaning
-        ownership. dry_run defaults to true; live execution (dry_run=false) also requires
-        confirm=true. Irreversible.
+        Param: JSON object. Requires user_ids or user_emails (bulk delete-all is not supported).
+        Users who own a team project, or protected/system/executing-admin users, are skipped
+        rather than orphaning ownership. dry_run defaults to true; live execution
+        (dry_run=false) also requires confirm=true. Irreversible.
+
+        Examples:
+        {"user_emails": ["a@x.com"], "dry_run": true}
+        {"user_ids": [77, 78], "dry_run": true}
+        {"user_emails": ["a@x.com", "b@x.com"], "dry_run": false, "confirm": true}
+        {"user_ids": [77], "user_emails": ["b@x.com"], "dry_run": false, "confirm": true}
     """
     from plugins.projects.api.v2.project import delete_project  # pylint: disable=E0401,C0415
     from tools import this  # pylint: disable=E0401,C0415
