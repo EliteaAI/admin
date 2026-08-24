@@ -29,6 +29,7 @@ from tools import context, log, web  # pylint: disable=E0611,E0401
 from ..tasks import db_tasks
 from ..tasks import eval_tasks
 from ..tasks import indexer_tasks
+from ..tasks import lifecycle_tasks
 from ..tasks import project_tasks
 from ..tasks import mesh_tasks
 from ..tasks import role_migration
@@ -121,6 +122,9 @@ class Method:  # pylint: disable=E1101,R0903
             ("sync_pgvector_credentials", project_tasks.sync_pgvector_credentials),
             ("recreate_project_tokens", project_tasks.recreate_project_tokens),
             ("delete_ghost_users", project_tasks.delete_ghost_users),
+            ("suspend_projects_and_users", lifecycle_tasks.suspend_projects_and_users),
+            ("delete_users_with_private_projects_cascade",
+             lifecycle_tasks.delete_users_with_private_projects_cascade),
             #
             ("mesh_get_plugin_frozen_requirements", mesh_tasks.mesh_get_plugin_frozen_requirements),
             #
@@ -172,9 +176,11 @@ class Method:  # pylint: disable=E1101,R0903
     def execute_admin_task(self, func, *args, **kwargs):
         """ Method """
         #
-        # Extract audit context (injected by API handler)
+        # Extract audit context (injected by API handler). Kept in kwargs
+        # (not popped) so tasks that need to protect the executing admin
+        # (e.g. lifecycle_tasks) can read it via kwargs.get("_user_id").
         #
-        user_id = kwargs.pop("_user_id", None)
+        user_id = kwargs.get("_user_id", None)
         #
         handler = None
         task_id = None
