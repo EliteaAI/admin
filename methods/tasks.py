@@ -176,11 +176,11 @@ class Method:  # pylint: disable=E1101,R0903
     def execute_admin_task(self, func, *args, **kwargs):
         """ Method """
         #
-        # Extract audit context (injected by API handler). Kept in kwargs
-        # (not popped) so tasks that need to protect the executing admin
-        # (e.g. lifecycle_tasks) can read it via kwargs.get("_user_id").
+        # Extract audit context (injected by API handler) and pass it through
+        # explicitly as _executing_user_id so tasks that need to protect the
+        # executing admin (e.g. lifecycle_tasks) can opt in via **kwargs.
         #
-        user_id = kwargs.get("_user_id", None)
+        user_id = kwargs.pop("_user_id", None)
         #
         handler = None
         task_id = None
@@ -213,7 +213,7 @@ class Method:  # pylint: disable=E1101,R0903
         start_ts = time.time()
         #
         try:
-            return func(*args, **kwargs)
+            return func(*args, _executing_user_id=user_id, **kwargs)
         except:  # pylint: disable=W0702
             log.exception("Got exception, stopping")
             raise
