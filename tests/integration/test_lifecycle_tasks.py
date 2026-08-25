@@ -484,6 +484,52 @@ class TestDeleteUsersCascade:
         assert 999 in task_env.projects
         assert task_env.deleted_project_ids == []
 
+    def test_personal_project_id_resolves_to_owner_and_deletes(self, lifecycle_tasks, task_env):
+        """project_ids selector: a personal project id identifies its owner for cascade delete."""
+        task_env.users[10] = {"id": 10, "email": "owner@x.com", "suspended": False}
+        task_env.projects[101] = {"id": 101, "name": "project_user_10", "owner_id": 10, "suspended": False}
+        task_env.personal_project_by_user[10] = 101
+        #
+        lifecycle_tasks.delete_users_with_private_projects_cascade(
+            param=_param(project_ids=[101], dry_run=False, confirm=True),
+            _executing_user_id="99",
+        )
+        #
+        assert 10 not in task_env.users
+        assert task_env.deleted_project_ids == [101]
+
+    def test_team_project_id_is_skipped(self, lifecycle_tasks, task_env):
+        """A team project id identifies no single user - must be skipped, not resolved to owner."""
+        task_env.users[10] = {"id": 10, "email": "owner@x.com", "suspended": False}
+        task_env.projects[2] = {"id": 2, "name": "acme-team", "owner_id": 10, "suspended": False}
+        #
+        lifecycle_tasks.delete_users_with_private_projects_cascade(
+            param=_param(project_ids=[2], dry_run=False, confirm=True),
+            _executing_user_id="99",
+        )
+        #
+        assert 10 in task_env.users
+        assert task_env.deleted_project_ids == []
+
+    def test_user_named_twice_via_id_and_project_is_deleted_once(self, lifecycle_tasks, task_env):
+        task_env.users[10] = {"id": 10, "email": "owner@x.com", "suspended": False}
+        task_env.projects[101] = {"id": 101, "name": "project_user_10", "owner_id": 10, "suspended": False}
+        task_env.personal_project_by_user[10] = 101
+        #
+        lifecycle_tasks.delete_users_with_private_projects_cascade(
+            param=_param(user_ids=[10], project_ids=[101], dry_run=False, confirm=True),
+            _executing_user_id="99",
+        )
+        #
+        assert task_env.deleted_project_ids == [101]
+
+    def test_no_selector_raises(self, lifecycle_tasks, task_env):
+        with pytest.raises(ValueError):
+            lifecycle_tasks.delete_users_with_private_projects_cascade(
+                param=_param(dry_run=True),
+                _executing_user_id="99",
+            )
+
     def test_live_run_without_resolvable_executing_admin_raises(self, lifecycle_tasks, task_env):
         """B2: '-' auth id must not crash the run; live delete must fail closed instead."""
         task_env.users[10] = {"id": 10, "email": "owner@x.com", "suspended": False}

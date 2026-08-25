@@ -197,6 +197,37 @@ def _resolve_projects(project_ids):
     return resolved, missing
 
 
+def _resolve_personal_project_owners(project_ids):
+    """
+        Resolve personal-project ids into their owner user dicts.
+
+        Returns (owners, missing, non_personal_ids) so callers can report
+        non-personal projects as explicit skips instead of ignoring them.
+    """
+    projects, missing = _resolve_projects(project_ids)
+    owners = {}
+    non_personal_ids = []
+    #
+    for project in projects:
+        if not is_personal_project(project):
+            non_personal_ids.append(project["id"])
+            continue
+        #
+        owner = None
+        if project.get("owner_id"):
+            try:
+                owner = auth.get_user(user_id=project["owner_id"])
+            except RuntimeError:
+                owner = None
+        #
+        if owner:
+            owners[int(owner["id"])] = owner
+        else:
+            missing.append(f"owner of project_id={project['id']}")
+    #
+    return list(owners.values()), missing, non_personal_ids
+
+
 def suspend_projects_and_users(*args, **kwargs):  # pylint: disable=W0613,R0912,R0914,R0915
     """
         Suspend private projects with their owners, or team projects only.
@@ -319,27 +350,17 @@ def suspend_projects_and_users(*args, **kwargs):  # pylint: disable=W0613,R0912,
                     users_by_id[int(user["id"])] = user
             #
             if project_ids:
-                projects, missing = _resolve_projects(project_ids)
+                owners, missing, non_personal_ids = _resolve_personal_project_owners(project_ids)
                 missing_all.extend(missing)
-                for project in projects:
-                    if not is_personal_project(project):
-                        log.info(
-                            "Skipping non-personal project under scope=private_with_users: project_id=%s",
-                            project["id"],
-                        )
-                        processed += 1
-                        skipped += 1
-                        continue
-                    owner = None
-                    if project.get("owner_id"):
-                        try:
-                            owner = auth.get_user(user_id=project["owner_id"])
-                        except RuntimeError:
-                            owner = None
-                    if owner:
-                        users_by_id[int(owner["id"])] = owner
-                    else:
-                        missing_all.append(f"owner of project_id={project['id']}")
+                for project_id in non_personal_ids:
+                    log.info(
+                        "Skipping non-personal project under scope=private_with_users: project_id=%s",
+                        project_id,
+                    )
+                    processed += 1
+                    skipped += 1
+                for owner in owners:
+                    users_by_id[int(owner["id"])] = owner
         #
         for entry in missing_all:
             log.info("Skipping (not found): %s", entry)
@@ -418,16 +439,20 @@ def suspend_projects_and_users(*args, **kwargs):  # pylint: disable=W0613,R0912,
 def delete_users_with_private_projects_cascade(*args, **kwargs):  # pylint: disable=W0613,R0912,R0914
     """
         Permanently delete users, their personal project, and system user record, in cascade.
-        Param: JSON object. Requires user_ids or user_emails (bulk delete-all is not supported).
-        Users who own a team project, or protected/system/executing-admin users, are skipped
-        rather than orphaning ownership. dry_run defaults to true; live execution
-        (dry_run=false) also requires confirm=true. Irreversible.
+        Param: JSON object. Requires user_ids, user_emails, or project_ids (bulk delete-all is
+        not supported). project_ids must be personal projects; each one is resolved to its
+        owner, who is then deleted in cascade - team project ids are skipped. Users who own a
+        team project, or protected/system/executing-admin users, are skipped rather than
+        orphaning ownership. dry_run defaults to true; live execution (dry_run=false) also
+        requires confirm=true. Irreversible.
 
         Examples:
         {"user_emails": ["a@x.com"], "dry_run": true}
         {"user_ids": [77, 78], "dry_run": true}
+        {"project_ids": [101], "dry_run": true}
         {"user_emails": ["a@x.com", "b@x.com"], "dry_run": false, "confirm": true}
-        {"user_ids": [77], "user_emails": ["b@x.com"], "dry_run": false, "confirm": true}
+        {"project_ids": [101, 102], "dry_run": false, "confirm": true}
+        {"user_ids": [77], "project_ids": [102], "dry_run": false, "confirm": true}
     """
     from plugins.projects.api.v2.project import delete_project  # pylint: disable=E0401,C0415
     from tools import this  # pylint: disable=E0401,C0415
@@ -436,11 +461,15 @@ def delete_users_with_private_projects_cascade(*args, **kwargs):  # pylint: disa
     #
     user_ids = _to_int_list(params.get("user_ids"), "user_ids")
     user_emails = _to_list(params.get("user_emails"))
+    project_ids = _to_int_list(params.get("project_ids"), "project_ids")
     dry_run = _to_bool(params.get("dry_run"), "dry_run", default=True)
     confirm = _to_bool(params.get("confirm"), "confirm", default=False)
     #
-    if not user_ids and not user_emails:
-        raise ValueError("At least one of user_ids/user_emails is required (bulk delete-all is not supported)")
+    if not user_ids and not user_emails and not project_ids:
+        raise ValueError(
+            "At least one of user_ids/user_emails/project_ids is required "
+            "(bulk delete-all is not supported)"
+        )
     #
     if not dry_run and not confirm:
         raise ValueError("Live execution (dry_run=false) requires confirm=true; aborting without changes")
@@ -453,9 +482,31 @@ def delete_users_with_private_projects_cascade(*args, **kwargs):  # pylint: disa
     #
     protected_project_ids = _protected_project_ids()
     #
-    users, missing = _resolve_users(user_ids, user_emails)
-    #
     processed = deleted = skipped = failed = 0
+    #
+    users_by_id = {}
+    missing = []
+    #
+    if user_ids or user_emails:
+        found_users, user_missing = _resolve_users(user_ids, user_emails)
+        missing.extend(user_missing)
+        for user in found_users:
+            users_by_id[int(user["id"])] = user
+    #
+    if project_ids:
+        owners, project_missing, non_personal_ids = _resolve_personal_project_owners(project_ids)
+        missing.extend(project_missing)
+        for project_id in non_personal_ids:
+            log.info(
+                "Skipping non-personal project (only personal projects identify a user): project_id=%s",
+                project_id,
+            )
+            processed += 1
+            skipped += 1
+        for owner in owners:
+            users_by_id[int(owner["id"])] = owner
+    #
+    users = list(users_by_id.values())
     #
     for entry in missing:
         log.info("Skipping (not found): %s", entry)
