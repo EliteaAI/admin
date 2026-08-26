@@ -101,6 +101,39 @@ class Module(module.ModuleModel):
                 "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
             }
         })
+        for _backup_permission in (
+            "projects.projects.backup",
+            "projects.projects.backup.download",
+        ):
+            auth.register_permissions({
+                "permissions": [_backup_permission],
+                "recommended_roles": {
+                    "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                }
+            })
+        auth.register_permissions({
+            "permissions": ["projects.projects.backup.full"],
+            "recommended_roles": {
+                "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+            }
+        })
+        for _restore_permission in (
+            "projects.projects.restore",
+            "projects.projects.restore.apply",
+            "projects.projects.restore.full",
+        ):
+            auth.register_permissions({
+                "permissions": [_restore_permission],
+                "recommended_roles": {
+                    "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                    "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                    "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                }
+            })
         auth.register_permissions({
             "permissions": ["configuration"],
             "recommended_roles": {
