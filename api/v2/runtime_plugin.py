@@ -65,9 +65,15 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         metadata_url = plugin_info["objects"]["metadata"]
         metadata = metadata_provider.get_metadata({"source": metadata_url})
         #
+        version = metadata.get("version", "0.0.0")
+        # Include composite version for elitea_core to enable UI update detection
+        if plugin == "elitea_core":
+            ui_version = metadata.get("ui_version")
+            if ui_version:
+                version = f"{version} (EliteaUI: {ui_version})"
         return {
             "ok": True,
-            "repo_version": metadata.get("version", "0.0.0"),
+            "repo_version": version,
         }
 
     @register_openapi(

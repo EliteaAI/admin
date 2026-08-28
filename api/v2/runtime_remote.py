@@ -59,6 +59,13 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
                 item.pop("config", None)
                 item.pop("config_data", None)
                 #
+                # Add UI version for elitea_core
+                if item.get("name") == "elitea_core":
+                    ui_version = item.get("metadata", {}).get("ui_version")
+                    if ui_version:
+                        item_version = item.get("local_version", "-")
+                        item["local_version"] = f"{item_version} (EliteaUI: {ui_version})"
+                #
                 if "git_head" in item.get("metadata", {}):
                     item_version = item.get("local_version", "-")
                     item_git_head = item["metadata"]["git_head"][:7]
