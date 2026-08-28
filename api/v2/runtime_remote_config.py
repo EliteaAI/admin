@@ -101,6 +101,12 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         if "data" not in data or not data["data"]:
             return {"ok": True}
         #
+        try:
+            yaml.safe_load(data["data"])
+        except yaml.YAMLError as exc:
+            log.warning("Invalid YAML in config update for %s: %s", plugin_id, exc)
+            return {"error": f"Invalid YAML: {exc}"}, 400
+        #
         if ":" not in plugin_id:
             # Pylon-level config update
             target_pylon_id = plugin_id

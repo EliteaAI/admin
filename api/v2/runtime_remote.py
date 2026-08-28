@@ -23,6 +23,7 @@ import time
 import zipfile
 
 import flask  # pylint: disable=E0401,W0611
+import yaml  # pylint: disable=E0401
 
 from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
 
@@ -184,6 +185,12 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
                             #
                             with zfile.open(item) as ifile:
                                 base_data = ifile.read().decode()
+                            #
+                            try:
+                                yaml.safe_load(base_data)
+                            except yaml.YAMLError as exc:
+                                log.warning("Invalid YAML in imported config %s: %s", item, exc)
+                                continue
                             #
                             if base_name == "pylon":
                                 target_events[pylon_id]["actions"].append(
