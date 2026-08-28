@@ -35,6 +35,8 @@ _PRIORITY_PLUGINS = [
 
 def _collect_plugin_versions(remote_runtimes):
     """ Collect versions for priority plugins across all active pylons """
+    from tools import context as ctx  # pylint: disable=C0415
+
     seen = {}
     for pylon_id in sorted(remote_runtimes.keys()):
         data = remote_runtimes[pylon_id]
@@ -43,7 +45,17 @@ def _collect_plugin_versions(remote_runtimes):
         for plugin in data.get("runtime_info", []):
             name = plugin.get("name", "")
             if name in _PRIORITY_PLUGINS and name not in seen:
-                seen[name] = plugin.get("local_version", "") or ""
+                version = plugin.get("local_version", "") or ""
+                # Add composite version for elitea_core (include UI version)
+                if name == "elitea_core":
+                    try:
+                        descriptor = ctx.module_manager.descriptors.get("elitea_core")
+                        ui_version = descriptor.metadata.get("ui_version") if descriptor else None
+                        if ui_version:
+                            version = f"{version} (EliteaUI: {ui_version})"
+                    except Exception:  # pylint: disable=W0718
+                        pass
+                seen[name] = version
     return [
         {"name": name, "version": seen[name]}
         for name in _PRIORITY_PLUGINS
