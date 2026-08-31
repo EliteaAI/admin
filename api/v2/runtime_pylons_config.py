@@ -87,6 +87,12 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         #
         elif action == "save":
             if "data" in data and data["data"]:
+                try:
+                    yaml.safe_load(data["data"])
+                except yaml.YAMLError as exc:
+                    log.warning("Invalid YAML in pylon config update for %s: %s", target_pylon_id, exc)
+                    return {"error": f"Invalid YAML: {exc}"}, 400
+                #
                 log.info("Requesting pylon config update: %s", target_pylon_id)
                 #
                 self.module.context.event_manager.fire_event(
