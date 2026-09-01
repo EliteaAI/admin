@@ -34,7 +34,11 @@ from ...utils.project_restore import (
 )
 
 
+PROMPT_LIB_MODE = "prompt_lib"
+
 FULL_MODE_PERMISSION = "projects.projects.restore.full"
+
+PROJECT_RESTORE_PERMISSION = "models.project_backup.restore"
 
 READ_CHUNK = 262144
 TRUE_VALUES = ("1", "true", "yes", "on")
@@ -54,6 +58,162 @@ def _param(name):
     if value is None:
         value = flask.request.args.get(name)
     return value or ""
+def _byte_chunks(spool):
+    """ Re-readable byte stream over the uploaded file """
+    def opener():
+        spool.seek(0)
+        while True:
+            chunk = spool.read(READ_CHUNK)
+            if not chunk:
+                break
+            yield chunk
+    #
+    return opener
+
+
+def _text_chunks(spool):
+    """ Re-readable text stream, decoded across chunk boundaries """
+    def opener():
+        spool.seek(0)
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        while True:
+            chunk = spool.read(READ_CHUNK)
+            if not chunk:
+                break
+            text = decoder.decode(chunk)
+            if text:
+                yield text
+        tail = decoder.decode(b"", True)
+        if tail:
+            yield tail
+    #
+    return opener
+
+
+def apply_uploaded_backup(project_id, allow_pg_dump=True, allow_mismatch_override=True):  # pylint: disable=R0911,R0912,R0914,R0915
+    """ Apply the uploaded artifact to the project schema """
+    if "file" not in flask.request.files:
+        return {"ok": False, "error": "no file provided"}, 400
+    #
+    tables = [item.strip() for item in _param("tables").split(",") if item.strip()]
+    include_parents = _flag("include_parents")
+    truncate = _flag("truncate")
+    dry_run = _flag("dry_run")
+    allow_mismatch = _flag("allow_project_mismatch") if allow_mismatch_override else False
+    #
+    from tools import project_constants as pc  # pylint: disable=E0401,C0415
+    schema = pc["PROJECT_SCHEMA_TEMPLATE"].format(project_id)
+    #
+    spool = tempfile.TemporaryFile()  # pylint: disable=R1732
+    #
+    try:
+        source = flask.request.files["file"]
+        filename = source.filename
+        #
+        while True:
+            chunk = source.stream.read(READ_CHUNK)
+            if not chunk:
+                break
+            spool.write(chunk)
+        #
+        size = spool.tell()
+        if not size:
+            return {"ok": False, "error": "empty file"}, 400
+        #
+        spool.seek(0)
+        head = spool.read(HEADER_SCAN_BYTES).decode("utf-8", "replace")
+        #
+        kind = detect_artifact_kind(head)
+        if kind is None:
+            return {"ok": False, "error": "unrecognized backup file"}, 400
+        #
+        artifact = parse_header(head)
+        artifact["kind"] = kind
+        artifact["filename"] = filename
+        artifact["size"] = size
+        #
+        source_project = artifact.get("project_id")
+        if isinstance(source_project, int) and source_project != project_id \
+                and not allow_mismatch:
+            if allow_mismatch_override:
+                error = "artifact belongs to project {}; pass " \
+                        "allow_project_mismatch=true to restore it into project {}".format(
+                            source_project, project_id)
+            else:
+                error = "artifact belongs to project {} and can not be restored " \
+                        "into project {}".format(source_project, project_id)
+            return {"ok": False, "error": error, "artifact": artifact}, 409
+        #
+        if kind == KIND_PG_DUMP:
+            if not allow_pg_dump:
+                return {
+                    "ok": False,
+                    "error": "raw pg_dump artifacts can only be restored by platform admins",
+                    "artifact": artifact,
+                }, 403
+            current_permissions = auth.resolve_permissions(mode="administration")
+            if not auth.has_access(current_permissions, [FULL_MODE_PERMISSION]):
+                return {"ok": False, "error": "access_denied"}, 403
+            if tables:
+                return {
+                    "ok": False,
+                    "error": "partial restore is not supported for pg_dump artifacts",
+                }, 400
+        #
+        connection = context.db.engine.raw_connection()
+        #
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "select 1 from information_schema.schemata where schema_name = %s",
+                    (schema,),
+                )
+                if cursor.fetchone() is None:
+                    return {"ok": False, "error": "project schema not found"}, 404
+            connection.rollback()
+            #
+            log.info(
+                "project_restore: applying %s artifact to %s (%s, dry_run=%s)",
+                kind, schema, "partial" if tables else "full", dry_run,
+            )
+            #
+            if kind == KIND_SAFE:
+                result = restore_safe_backup(
+                    connection,
+                    open_chunks=_text_chunks(spool),
+                    schema=schema,
+                    tables=tables,
+                    include_parents=include_parents,
+                    truncate=truncate,
+                    dry_run=dry_run,
+                )
+            else:
+                result = run_psql(
+                    open_chunks=_byte_chunks(spool),
+                    schema=schema,
+                    host=c.POSTGRES_HOST,
+                    port=c.POSTGRES_PORT,
+                    user=c.POSTGRES_USER,
+                    password=c.POSTGRES_PASSWORD,
+                    database=c.POSTGRES_DB,
+                    dry_run=dry_run,
+                )
+                if result["return_code"] != 0 and not dry_run:
+                    return {"ok": False, "error": "psql failed",
+                            "artifact": artifact, "result": result}, 400
+        finally:
+            connection.close()
+    except ValueError as exc:
+        log.warning("project_restore: rejected artifact for %s: %s", schema, exc)
+        return {"ok": False, "error": str(exc)}, 400
+    except Exception as exc:  # pylint: disable=W0703
+        log.exception("project_restore: failed for %s", schema)
+        return {"ok": False, "error": "restore failed", "detail": str(exc)}, 500
+    finally:
+        spool.close()
+    #
+    result["mode"] = "partial" if tables else "full"
+    return {"ok": True, "artifact": artifact, "result": result}, 200
 
 
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
@@ -91,157 +251,58 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
             "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
             "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
         }})
-    def post(self, project_id: int, **kwargs):  # pylint: disable=R0911,R0914
+    def post(self, project_id: int, **kwargs):
         """ Process POST """
         _ = kwargs
         #
-        if "file" not in flask.request.files:
-            return {"ok": False, "error": "no file provided"}, 400
-        #
-        tables = [item.strip() for item in _param("tables").split(",") if item.strip()]
-        include_parents = _flag("include_parents")
-        truncate = _flag("truncate")
-        dry_run = _flag("dry_run")
-        allow_mismatch = _flag("allow_project_mismatch")
-        #
-        from tools import project_constants as pc  # pylint: disable=E0401,C0415
-        schema = pc["PROJECT_SCHEMA_TEMPLATE"].format(project_id)
-        #
-        spool = tempfile.TemporaryFile()  # pylint: disable=R1732
-        #
-        try:
-            source = flask.request.files["file"]
-            filename = source.filename
-            #
-            while True:
-                chunk = source.stream.read(READ_CHUNK)
-                if not chunk:
-                    break
-                spool.write(chunk)
-            #
-            size = spool.tell()
-            if not size:
-                return {"ok": False, "error": "empty file"}, 400
-            #
-            spool.seek(0)
-            head = spool.read(HEADER_SCAN_BYTES).decode("utf-8", "replace")
-            #
-            kind = detect_artifact_kind(head)
-            if kind is None:
-                return {"ok": False, "error": "unrecognized backup file"}, 400
-            #
-            artifact = parse_header(head)
-            artifact["kind"] = kind
-            artifact["filename"] = filename
-            artifact["size"] = size
-            #
-            source_project = artifact.get("project_id")
-            if isinstance(source_project, int) and source_project != project_id \
-                    and not allow_mismatch:
-                return {
-                    "ok": False,
-                    "error": "artifact belongs to project {}; pass "
-                             "allow_project_mismatch=true to restore it into project {}".format(
-                                 source_project, project_id),
-                    "artifact": artifact,
-                }, 409
-            #
-            if kind == KIND_PG_DUMP:
-                current_permissions = auth.resolve_permissions(mode="administration")
-                if not auth.has_access(current_permissions, [FULL_MODE_PERMISSION]):
-                    return {"ok": False, "error": "access_denied"}, 403
-                if tables:
-                    return {
-                        "ok": False,
-                        "error": "partial restore is not supported for pg_dump artifacts",
-                    }, 400
-            #
-            connection = context.db.engine.raw_connection()
-            #
-            try:
-                with connection.cursor() as cursor:
-                    cursor.execute(
-                        "select 1 from information_schema.schemata where schema_name = %s",
-                        (schema,),
-                    )
-                    if cursor.fetchone() is None:
-                        return {"ok": False, "error": "project schema not found"}, 404
-                connection.rollback()
-                #
-                log.info(
-                    "project_restore: applying %s artifact to %s (%s, dry_run=%s)",
-                    kind, schema, "partial" if tables else "full", dry_run,
-                )
-                #
-                if kind == KIND_SAFE:
-                    result = restore_safe_backup(
-                        connection,
-                        open_chunks=self._text_chunks(spool),
-                        schema=schema,
-                        tables=tables,
-                        include_parents=include_parents,
-                        truncate=truncate,
-                        dry_run=dry_run,
-                    )
-                else:
-                    result = run_psql(
-                        open_chunks=self._byte_chunks(spool),
-                        schema=schema,
-                        host=c.POSTGRES_HOST,
-                        port=c.POSTGRES_PORT,
-                        user=c.POSTGRES_USER,
-                        password=c.POSTGRES_PASSWORD,
-                        database=c.POSTGRES_DB,
-                        dry_run=dry_run,
-                    )
-                    if result["return_code"] != 0 and not dry_run:
-                        return {"ok": False, "error": "psql failed",
-                                "artifact": artifact, "result": result}, 400
-            finally:
-                connection.close()
-        except ValueError as exc:
-            log.warning("project_restore: rejected artifact for %s: %s", schema, exc)
-            return {"ok": False, "error": str(exc)}, 400
-        except Exception as exc:  # pylint: disable=W0703
-            log.exception("project_restore: failed for %s", schema)
-            return {"ok": False, "error": "restore failed", "detail": str(exc)}, 500
-        finally:
-            spool.close()
-        #
-        result["mode"] = "partial" if tables else "full"
-        return {"ok": True, "artifact": artifact, "result": result}, 200
+        return apply_uploaded_backup(project_id)
 
-    @staticmethod
-    def _byte_chunks(spool):
-        """ Re-readable byte stream over the uploaded file """
-        def opener():
-            spool.seek(0)
-            while True:
-                chunk = spool.read(READ_CHUNK)
-                if not chunk:
-                    break
-                yield chunk
-        #
-        return opener
 
-    @staticmethod
-    def _text_chunks(spool):
-        """ Re-readable text stream, decoded across chunk boundaries """
-        def opener():
-            spool.seek(0)
-            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-            while True:
-                chunk = spool.read(READ_CHUNK)
-                if not chunk:
-                    break
-                text = decoder.decode(chunk)
-                if text:
-                    yield text
-            tail = decoder.decode(b"", True)
-            if tail:
-                yield tail
+class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
+    """ API """
+
+    @register_openapi(
+        name="Restore Project Backup (project scope)",
+        description="Restore a redacted (safe) backup into this project. Upload the "
+                    ".sql file as multipart form field 'file'. Only safe artifacts are "
+                    "accepted here; raw pg_dump restores stay in the administration API. "
+                    "An artifact taken from another project is rejected unless "
+                    "'allow_project_mismatch=true' is passed. Without 'tables' the whole "
+                    "artifact is applied; with 'tables' only the listed tables.",
+        parameters=[
+            {"name": "project_id", "in": "path", "schema": {"type": "integer"},
+             "description": "Target project ID."},
+            {"name": "tables", "in": "query", "schema": {"type": "string"},
+             "description": "Comma-separated tables to restore. Empty means full restore."},
+            {"name": "include_parents", "in": "query", "schema": {"type": "boolean"},
+             "description": "Also restore the FK parents of the listed tables."},
+            {"name": "truncate", "in": "query", "schema": {"type": "boolean"},
+             "description": "Empty the in-scope tables first (TRUNCATE ... CASCADE) "
+                            "instead of merging with ON CONFLICT DO NOTHING."},
+            {"name": "dry_run", "in": "query", "schema": {"type": "boolean"},
+             "description": "Execute inside a transaction and roll it back."},
+            {"name": "allow_project_mismatch", "in": "query", "schema": {"type": "boolean"},
+             "description": "Required when the artifact was taken from another project."},
+        ],
+    )
+    @auth.decorators.check_api({
+        "permissions": [PROJECT_RESTORE_PERMISSION],
+        "recommended_roles": {
+            "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+            "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+            "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+        }})
+    def post(self, project_id: int, **kwargs):
+        """ Process POST """
+        _ = kwargs
         #
-        return opener
+        # Safe artifacts may be restored across projects via allow_project_mismatch=true;
+        # authorization is enforced on the TARGET project (models.project_backup.restore
+        # on project_id in the URL), so the caller must hold that permission there.
+        #
+        return apply_uploaded_backup(
+            project_id, allow_pg_dump=False, allow_mismatch_override=True,
+        )
 
 
 class API(api_tools.APIBase):  # pylint: disable=R0903
@@ -253,4 +314,5 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
 
     mode_handlers = {
         'administration': AdminAPI,
+        PROMPT_LIB_MODE: PromptLibAPI,
     }

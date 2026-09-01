@@ -134,6 +134,28 @@ class Module(module.ModuleModel):
                     "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
                 }
             })
+        # Downloading a backup is a project-member action; viewers are excluded because
+        # a full export is bulk data egress. Restore stays admin-only: it truncates.
+        for _project_backup_permission in (
+            "models.project_backup",
+            "models.project_backup.download",
+        ):
+            auth.register_permissions({
+                "permissions": [_project_backup_permission],
+                "recommended_roles": {
+                    "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
+                    "default": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
+                    "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
+                }
+            })
+        auth.register_permissions({
+            "permissions": ["models.project_backup.restore"],
+            "recommended_roles": {
+                "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+            }
+        })
         auth.register_permissions({
             "permissions": ["configuration"],
             "recommended_roles": {
