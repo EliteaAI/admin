@@ -28,6 +28,7 @@ from tools import auth, api_tools, register_openapi  # pylint: disable=E0401
 from tools import context  # pylint: disable=E0401
 from tools import constants as c  # pylint: disable=E0401
 
+from ...utils import backup_crypto
 from ...utils.project_backup import iter_project_backup_sql, iter_pg_dump
 
 PROMPT_LIB_MODE = "prompt_lib"
@@ -38,6 +39,8 @@ PROJECT_DOWNLOAD_PERMISSION = "models.project_backup.download"
 
 SAFE_MODES = ("safe", "sanitized", "default")
 FULL_MODES = ("full", "raw", "as_is")
+
+FALSE_VALUES = ("0", "false", "no", "off")
 
 
 def _slugify(value):
@@ -83,7 +86,32 @@ def _full_stream(schema):
     )
 
 
-def make_backup_response(project_id, safe_mode, exclude_tables):
+def resolve_encryption(policy, plain_requested=False):
+    """ Decide whether this download is encrypted: (encrypt, master_key, error) """
+    if policy == backup_crypto.POLICY_DISABLED:
+        return False, None, None
+    #
+    if plain_requested:
+        if policy == backup_crypto.POLICY_REQUIRED:
+            return False, None, "unencrypted backups are not allowed on this setup"
+        return False, None, None
+    #
+    master_key = backup_crypto.configured_master_key()
+    #
+    if master_key is None:
+        if policy == backup_crypto.POLICY_REQUIRED:
+            return False, None, "SECRETS_MASTER_KEY is not configured, " \
+                                "backups can not be encrypted"
+        # A setup without a master key keeps working as before
+        log.warning(
+            "project_backup: SECRETS_MASTER_KEY is not set, exporting unencrypted",
+        )
+        return False, None, None
+    #
+    return True, master_key, None
+
+
+def make_backup_response(project_id, safe_mode, exclude_tables, encrypt=False, master_key=None):
     """ Resolve the project schema and return a streaming SQL download """
     from tools import project_constants as pc  # pylint: disable=E0401,C0415
     schema = pc["PROJECT_SCHEMA_TEMPLATE"].format(project_id)
@@ -116,9 +144,14 @@ def make_backup_response(project_id, safe_mode, exclude_tables):
         project_id, _slugify(project_name), "safe" if safe_mode else "full", timestamp,
     )
     #
+    mimetype = "application/sql"
+    if encrypt:
+        filename += backup_crypto.ENVELOPE_SUFFIX
+        mimetype = backup_crypto.ENVELOPE_MIMETYPE
+    #
     log.info(
-        "project_backup: exporting project %s (%s) in %s mode",
-        project_id, schema, "safe" if safe_mode else "full",
+        "project_backup: exporting project %s (%s) in %s mode (encrypted=%s)",
+        project_id, schema, "safe" if safe_mode else "full", encrypt,
     )
     #
     if safe_mode:
@@ -127,9 +160,12 @@ def make_backup_response(project_id, safe_mode, exclude_tables):
         connection.close()
         stream = _full_stream(schema)
     #
+    if encrypt:
+        stream = backup_crypto.iter_encrypt(stream, master_key)
+    #
     return flask.Response(
         stream,
-        mimetype="application/sql",
+        mimetype=mimetype,
         headers={
             "Content-Disposition": 'attachment; filename="{}"'.format(filename),
             "X-Content-Type-Options": "nosniff",
@@ -144,6 +180,10 @@ def _requested_exclude_tables():
     ]
 
 
+def _plain_requested():
+    return (flask.request.args.get("encrypt") or "").strip().lower() in FALSE_VALUES
+
+
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     """ API """
 
@@ -154,7 +194,10 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
                     "credential-bearing columns / JSON keys are redacted. "
                     "The 'full' mode returns a plain pg_dump of the schema as-is, "
                     "including DDL and any plaintext secrets, and requires the "
-                    "'projects.projects.backup.full' permission.",
+                    "'projects.projects.backup.full' permission. "
+                    "The artifact is encrypted with a key derived from this setup's "
+                    "SECRETS_MASTER_KEY and downloads as .sql.enc; it can only be "
+                    "restored where that master key matches.",
         parameters=[
             {"name": "project_id", "in": "path", "schema": {"type": "integer"},
              "description": "Project ID to back up."},
@@ -163,14 +206,20 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
              "description": "safe (default, redacted, data only) or full (raw pg_dump)."},
             {"name": "exclude_tables", "in": "query", "schema": {"type": "string"},
              "description": "Comma-separated extra tables to skip (safe mode only)."},
+            {"name": "encrypt", "in": "query",
+             "schema": {"type": "boolean", "default": True},
+             "description": "Pass false to download a plain .sql artifact instead of an "
+                            "encrypted .sql.enc one, e.g. to move a backup to a setup "
+                            "with a different SECRETS_MASTER_KEY. Refused when the "
+                            "platform requires encrypted backups."},
         ],
     )
     @auth.decorators.check_api({
         "permissions": ["projects.projects.backup.download"],
         "recommended_roles": {
-            "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
-            "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
-            "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+            "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+            "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+            "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
         }})
     def get(self, project_id: int, **kwargs):  # pylint: disable=R0911,R0914
         """ Process GET """
@@ -190,7 +239,19 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
             if not auth.has_access(current_permissions, [FULL_MODE_PERMISSION]):
                 return {"ok": False, "error": "access_denied"}, 403
         #
-        return make_backup_response(project_id, safe_mode, _requested_exclude_tables())
+        # Opting out of encryption stays here: this permission already grants a
+        # raw pg_dump, so it exposes nothing new, and it is the way a backup
+        # reaches a setup with a different SECRETS_MASTER_KEY.
+        #
+        encrypt, master_key, error = resolve_encryption(
+            backup_crypto.handler_policy(self), _plain_requested(),
+        )
+        if error is not None:
+            return {"ok": False, "error": error}, 400
+        #
+        return make_backup_response(
+            project_id, safe_mode, _requested_exclude_tables(), encrypt, master_key,
+        )
 
 
 class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
@@ -201,7 +262,10 @@ class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         description="Download a redacted SQL backup of the current project schema. "
                     "Only the 'safe' mode is available here: sensitive tables are "
                     "skipped and credential-bearing columns / JSON keys are redacted. "
-                    "Raw pg_dump exports are available in the administration API only.",
+                    "Raw pg_dump exports are available in the administration API only. "
+                    "The artifact is encrypted with a key derived from this setup's "
+                    "SECRETS_MASTER_KEY and downloads as .sql.enc; it can only be "
+                    "restored where that master key matches.",
         parameters=[
             {"name": "project_id", "in": "path", "schema": {"type": "integer"},
              "description": "Project ID to back up."},
@@ -227,7 +291,15 @@ class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         if requested_mode not in SAFE_MODES:
             return {"ok": False, "error": "only safe mode is available for projects"}, 403
         #
-        return make_backup_response(project_id, True, _requested_exclude_tables())
+        # Project scope follows the platform policy: no opting out of encryption
+        #
+        encrypt, master_key, error = resolve_encryption(backup_crypto.handler_policy(self))
+        if error is not None:
+            return {"ok": False, "error": error}, 400
+        #
+        return make_backup_response(
+            project_id, True, _requested_exclude_tables(), encrypt, master_key,
+        )
 
 
 class API(api_tools.APIBase):  # pylint: disable=R0903

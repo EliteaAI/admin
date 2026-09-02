@@ -101,6 +101,9 @@ class Module(module.ModuleModel):
                 "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
             }
         })
+        # Administration scope covers every project on the platform, so backup and
+        # restore both stay with super_admin here. Project admins get their own
+        # project via the models.project_backup.* permissions below.
         for _backup_permission in (
             "projects.projects.backup",
             "projects.projects.backup.download",
@@ -108,9 +111,9 @@ class Module(module.ModuleModel):
             auth.register_permissions({
                 "permissions": [_backup_permission],
                 "recommended_roles": {
-                    "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
-                    "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
-                    "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                    "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                    "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
+                    "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
                 }
             })
         auth.register_permissions({

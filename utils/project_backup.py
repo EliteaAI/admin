@@ -35,13 +35,51 @@ REDACTED = "***REDACTED***"
 # Tables never exported in "safe" mode
 #
 SAFE_MODE_EXCLUDED_TABLES = {
+    #
+    # Access control: these rows grant roles and permissions
+    #
+    "role": "project roles",
+    "role_permission": "role permissions",
+    "user_role": "user role assignments",
+    #
+    # Credentials, endpoints and storage of the source project
+    #
+    "configuration": "integration endpoints and credentials",
+    "artifacts": "storage objects of the source project",
+    #
+    # Conversations: personal content, tied to the users who took part
+    #
+    "chat_conversations": "conversation history",
+    "chat_conversation_folders": "conversation history",
     "chat_conversation_share_tokens": "share tokens and password hashes",
-    "chat_message_trace_step": "execution traces",
     "chat_conversation_summaries": "derived conversation context",
+    "chat_message_group": "conversation history",
+    "chat_message_items": "conversation history",
+    "chat_message_trace_step": "execution traces",
+    "chat_messages_text": "conversation history",
+    "chat_messages_attachment": "conversation history",
+    "chat_messages_canvas": "conversation history",
     "chat_messages_context": "conversation context payloads",
+    "chat_canvas_versions": "conversation history",
+    "chat_canvas_version_authors": "conversation history",
+    "chat_participants": "participants of the source project",
+    "chat_participant_mapping": "participants of the source project",
+    "chat_selected_conversations": "per-user conversation state",
+    #
+    # Per-user state of the source project
+    #
+    "social_user_module_settings": "per-user settings",
+    "social_folder_items": "per-user folder layout",
+    #
+    # Platform / run state, not project content
+    #
     "moderation_state": "platform publish/moderation workflow state",
+    "eval_run": "evaluation run output",
     "eval_result": "evaluation run output",
     "eval_human_score": "evaluation run output",
+    #
+    # Legacy
+    #
     "alita_tools": "legacy, superseded by elitea_tools",
     "chat_messages": "legacy, superseded by chat_message_group/chat_message_items",
 }
@@ -278,6 +316,31 @@ def _foreign_key_edges(cursor, schema):
     return [(row[0], row[1]) for row in cursor.fetchall()]
 
 
+def _self_reference_columns(cursor, schema):
+    """ Map self-referencing tables to the columns their own FKs point at """
+    cursor.execute(
+        "select child.relname, attr.attname"
+        " from pg_constraint con"
+        " join pg_class child on child.oid = con.conrelid"
+        " join pg_namespace child_ns on child_ns.oid = child.relnamespace"
+        " cross join unnest(con.confkey) as ref(attnum)"
+        " join pg_attribute attr"
+        " on attr.attrelid = con.confrelid and attr.attnum = ref.attnum"
+        " where con.contype = 'f'"
+        " and con.conrelid = con.confrelid"
+        " and child_ns.nspname = %s"
+        " order by child.relname, attr.attnum",
+        (schema,),
+    )
+    #
+    result = {}
+    for table, column in cursor.fetchall():
+        columns = result.setdefault(table, [])
+        if column not in columns:
+            columns.append(column)
+    return result
+
+
 def order_tables(tables, edges):
     """ Order tables so that parents are inserted before their children """
     table_set = set(tables)
@@ -316,7 +379,7 @@ def _literal(mogrify_cursor, value):
 
 def _iter_table_sql(  # pylint: disable=R0913,R0914
         dbapi_connection, mogrify_cursor, schema, table, columns, redactor,
-        chunk_size=DEFAULT_CHUNK_SIZE,
+        chunk_size=DEFAULT_CHUNK_SIZE, order_by=(),
 ):
     """ Yield INSERT statements for a single table """
     column_names = [name for name, _ in columns]
@@ -340,10 +403,19 @@ def _iter_table_sql(  # pylint: disable=R0913,R0914
     row_count = 0
     buffer = []
     #
-    try:
-        cursor.execute(
-            "select {} from {}.{}".format(select_list, _quote(schema), _quote(table))
+    # Rows are split across several INSERT statements and FK checks run at the end
+    # of each one, so a self-referencing table must emit parents first. Ordering by
+    # the referenced (identity/serial) column does that: a row can only point at an
+    # already existing row, which therefore has a lower value.
+    #
+    query = "select {} from {}.{}".format(select_list, _quote(schema), _quote(table))
+    if order_by:
+        query += " order by {}".format(
+            ", ".join("{} asc".format(_quote(name)) for name in order_by)
         )
+    #
+    try:
+        cursor.execute(query)
         #
         for row in cursor:
             values = redactor.apply(dict(zip(column_names, row)))
@@ -402,6 +474,7 @@ def iter_project_backup_sql(  # pylint: disable=R0913,R0914,R0915
         sequences = {
             table: _list_sequence_columns(cursor, schema, table) for table in tables
         }
+        self_references = _self_reference_columns(cursor, schema)
     #
     generated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     skipped = sorted(table for table in all_tables if table in excluded)
@@ -425,6 +498,7 @@ def iter_project_backup_sql(  # pylint: disable=R0913,R0914,R0915
             for item in _iter_table_sql(
                     dbapi_connection, mogrify_cursor, schema, table,
                     table_columns, redactor, chunk_size,
+                    self_references.get(table, ()),
             ):
                 if isinstance(item, int):
                     counts[table] = item
