@@ -41,6 +41,8 @@ PROMPT_LIB_MODE = "prompt_lib"
 
 FULL_MODE_PERMISSION = "projects.projects.restore.full"
 
+PROJECT_BACKUP_PERMISSION = "models.project_backup"
+
 PROJECT_RESTORE_PERMISSION = "models.project_backup.restore"
 
 READ_CHUNK = 262144
@@ -87,6 +89,25 @@ def _is_same_site_request():
         return False
     #
     return bool(source) and source == flask.request.host.split(":")[0]
+
+
+def _is_own_personal_project(project_id):
+    """ A private project is created with its owner as editor / viewer / monitor,
+    never as its admin, so restoring into it is authorized by ownership instead """
+    current_user = auth.current_user()
+    user_id = current_user.get("id") if current_user else None
+    #
+    if not user_id:
+        return False
+    #
+    try:
+        personal_project_id = context.rpc_manager.timeout(5). \
+            projects_get_personal_project_id(user_id)
+    except Exception:  # pylint: disable=W0703
+        log.exception("project_restore: failed to resolve the personal project of user %s", user_id)
+        return False
+    #
+    return personal_project_id == project_id
 
 
 def _byte_chunks(spool):
@@ -447,11 +468,11 @@ class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         ],
     )
     @auth.decorators.check_api({
-        "permissions": [PROJECT_RESTORE_PERMISSION],
+        "permissions": [PROJECT_BACKUP_PERMISSION],
         "recommended_roles": {
-            "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
-            "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
-            "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+            "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
+            "default": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
+            "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
         }})
     def post(self, project_id: int, **kwargs):
         """ Process POST """
@@ -459,7 +480,16 @@ class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         #
         # Safe artifacts may be restored across projects via allow_project_mismatch=true;
         # authorization is enforced on the TARGET project (models.project_backup.restore
-        # on project_id in the URL), so the caller must hold that permission there.
+        # on project_id in the URL), so the caller must hold that permission there --
+        # or own the target, which is how a private project reaches its own restore.
+        #
+        current_permissions = auth.resolve_permissions(
+            mode=PROMPT_LIB_MODE, project_id=project_id,
+        )
+        if not auth.has_access(current_permissions, [PROJECT_RESTORE_PERMISSION]) \
+                and not _is_own_personal_project(project_id):
+            return {"ok": False, "error": "access_denied",
+                    "required": [PROJECT_RESTORE_PERMISSION]}, 403
         #
         # Tables a safe backup never exports are refused here instead of being
         # skipped: a hand-written artifact could otherwise insert role /
