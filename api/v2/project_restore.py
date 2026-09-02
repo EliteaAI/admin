@@ -32,7 +32,8 @@ from tools import constants as c  # pylint: disable=E0401
 from ...utils import backup_crypto
 from ...utils.project_restore import (
     KIND_SAFE, KIND_PG_DUMP, HEADER_SCAN_BYTES, SAFE_RESTORE_DENIED_TABLES,
-    detect_artifact_kind, parse_header, restore_safe_backup, run_psql,
+    detect_artifact_kind, parse_header, pg_dump_schema, restore_safe_backup,
+    run_psql, server_settings,
 )
 
 
@@ -274,6 +275,24 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0914,R0915
                 "error": "partial restore is not supported for pg_dump artifacts",
             }, 400
         #
+        # A plain pg_dump rebuilds the schema it was taken from: it carries its
+        # own CREATE SCHEMA, fully qualified names and a search_path reset, so
+        # the target search_path is ignored and the restore would recreate the
+        # source project instead of filling this one.
+        #
+        if full_mode:
+            dump_schema = pg_dump_schema(head)
+            artifact["dump_schema"] = dump_schema
+            #
+            if dump_schema is not None and dump_schema != schema:
+                return {
+                    "ok": False,
+                    "error": "this pg_dump rebuilds schema {} and can not be retargeted "
+                             "at {}; restore it in safe mode instead".format(
+                                 dump_schema, schema),
+                    "artifact": artifact,
+                }, 400
+        #
         connection = context.db.engine.raw_connection()
         #
         try:
@@ -284,6 +303,10 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0914,R0915
                 )
                 if cursor.fetchone() is None:
                     return {"ok": False, "error": "project schema not found"}, 404
+                #
+                # Client tools newer than the server write parameters it does
+                # not know into the dump preamble; those SETs are dropped
+                known_settings = server_settings(cursor) if full_mode else None
             connection.rollback()
             #
             log.info(
@@ -320,6 +343,7 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0914,R0915
                     password=c.POSTGRES_PASSWORD,
                     database=c.POSTGRES_DB,
                     dry_run=dry_run,
+                    known_settings=known_settings,
                 )
                 if result["return_code"] != 0 and not dry_run:
                     return {"ok": False, "error": "psql failed",
