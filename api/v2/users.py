@@ -201,8 +201,6 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
             delete_ids = list(map(int, request.args["id[]"].split(',')))
         except TypeError:
             return 'IDs must be integers', 400
+        # remove_users_from_project fires user_removed_from_project itself.
         self.module.remove_users_from_project(project_id, delete_ids)
-        self.module.context.event_manager.fire_event(
-            "user_removed_from_project", {'project_id': project_id, 'user_ids': delete_ids},
-        )
         return {'msg': 'users successfully removed'}, 204
