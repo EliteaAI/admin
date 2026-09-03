@@ -286,10 +286,7 @@ def iter_decrypt(chunks, master_key):
     local_key_id = key_id(master_key)
     if header["key_id"] != local_key_id:
         raise ValueError(
-            "This backup was encrypted for another setup (key id {}, this one uses {}). "
-            "Restore it where SECRETS_MASTER_KEY matches.".format(
-                header["key_id"], local_key_id,
-            )
+            "This backup was encrypted for another setup."
         )
     #
     cipher = AESGCM(_frame_key(master_key, salt))
