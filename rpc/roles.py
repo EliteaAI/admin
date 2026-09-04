@@ -100,8 +100,16 @@ class RPC:
 
     @web.rpc("admin_remove_users_from_project", "remove_users_from_project")
     def remove_users_from_project(self, project_id: int, user_ids: list[int], **kwargs) -> bool:
+        if not user_ids:
+            return True
         for user_id in user_ids:
             auth.update_project_user_roles(project_id, user_id, [])
+        # Fired here rather than at each call site: the user-deletion cascade tasks reach
+        # this RPC directly, and subscribers' per-project cleanup must run for them too.
+        self.context.event_manager.fire_event(
+            "user_removed_from_project",
+            {'project_id': project_id, 'user_ids': list(user_ids)},
+        )
         return True
 
     @web.rpc("admin_get_permissions_in_project", "get_permissions_in_project")
