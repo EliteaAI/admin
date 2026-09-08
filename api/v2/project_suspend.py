@@ -56,6 +56,8 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903,C0115
                 return {"error": "Project not found"}, 404
             project.suspended = bool(suspended)
             session.commit()
+            user_ids = self.module.context.rpc_manager.call.admin_get_users_ids_in_project(project_id)
+            self.module.context.rpc_manager.call.clear_user_projects_cache(user_ids)
             return {"id": project.id, "suspended": project.suspended}, 200
 
 
