@@ -175,3 +175,64 @@ def test_an_unchanged_usable_value_is_still_skipped(plugin_config_values):
         {"index_scheduling_cron": "*/15 * * * *"},
     )
     assert not fired
+
+
+def test_a_switch_stored_as_one_is_flagged_for_repair(plugin_config_values):
+    """1 == True in Python, so comparing the stored value against the
+    substituted one offers no repair for the single input that needs it: the
+    screen agrees with what runs, and the literal stays until some unrelated
+    save of the section happens to rewrite it."""
+    _, meta = plugin_config_values.collect_section_entries(
+        _bool_runtimes(1), "runtime", include_meta=True,
+    )
+    assert meta["index_scheduling_enabled"]["value_invalid"] is True
+    assert meta["index_scheduling_enabled"]["stored_value"] == 1
+
+
+def test_a_switch_stored_as_zero_is_still_flagged(plugin_config_values):
+    _, meta = plugin_config_values.collect_section_entries(
+        _bool_runtimes(0), "runtime", include_meta=True,
+    )
+    assert meta["index_scheduling_enabled"]["value_invalid"] is True
+
+
+def test_nothing_stored_is_not_something_to_repair(plugin_config_values):
+    """Screen and consumer both fall back to the default, so they already
+    agree -- badging it asks the operator to save something with no effect."""
+    _, meta = plugin_config_values.collect_section_entries(
+        _runtimes(None), "runtime", include_meta=True,
+    )
+    assert meta["index_scheduling_cron"].get("value_invalid") is None
+
+
+def test_saving_the_default_over_nothing_stored_is_a_no_op(plugin_config_values):
+    """Treated as unusable, an absent value bypasses the unchanged-check and
+    every save of the section rewrites every untouched field."""
+    fired = _put(
+        plugin_config_values, _runtimes(None),
+        {"index_scheduling_cron": "* * * * *"},
+    )
+    assert not fired
+
+
+CRON_PROP_NO_DEFAULT = {
+    "type": "string", "format": "cron",
+    "path": "scheduler.index_scheduling.cron", "section": "runtime",
+}
+
+
+def test_a_cron_field_without_a_default_still_reports_something_savable(
+        plugin_config_values,
+):
+    """The default is what an unusable value is reported as; where the field
+    declares none, reporting it hands the form a null its own validator
+    rejects, so every save of the section fails on a field the operator never
+    touched."""
+    runtimes = _runtimes("9 *")
+    schema = runtimes["pylon-main"]["runtime_info"][0]["admin_schema"]
+    schema["properties"]["index_scheduling_cron"] = CRON_PROP_NO_DEFAULT
+    values, meta = plugin_config_values.collect_section_entries(
+        runtimes, "runtime", include_meta=True,
+    )
+    assert values["index_scheduling_cron"] == "9 *"
+    assert meta["index_scheduling_cron"]["value_invalid"] is True

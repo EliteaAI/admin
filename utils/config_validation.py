@@ -68,7 +68,15 @@ def _boolean_errors(field_schema, value):
 
 
 def stored_value_is_unusable(field_schema, value):
-    """Whether what is stored is something its consumer would reject."""
+    """Whether what is stored is something its consumer would reject.
+
+    Nothing stored is not something to repair: the consumer falls back to the
+    default and so does the screen, so they already agree. Reporting it as
+    unusable would badge a field the operator cannot act on and rewrite it on
+    every save of the section.
+    """
+    if value is None:
+        return False
     return bool(
         _cron_errors(field_schema, value) or _boolean_errors(field_schema, value)
     )
@@ -84,10 +92,17 @@ def effective_config_value(field_schema, value):
     the displayed value repairs the config rather than being skipped as
     unchanged.
     """
+    default = field_schema.get("default")
     if value is None:
-        return field_schema.get("default")
+        return default
     if _cron_errors(field_schema, value) or _boolean_errors(field_schema, value):
-        return field_schema.get("default")
+        # A field whose own default is missing or unusable has nothing better
+        # to offer. Reporting the default anyway hands the form a value its
+        # own validator rejects, so every save of the section fails for good.
+        if default is not None and not stored_value_is_unusable(
+                field_schema, default,
+        ):
+            return default
     return value
 
 

@@ -105,6 +105,7 @@ def collect_section_entries(remote_runtimes, section_id, include_meta=False):
                     "plugin_name": plugin_name,
                     "raw_value": raw_value,
                     "stored_value": stored_value,
+                    "prop_def": prop_def,
                     "path": path,
                     "requires_restart": prop_def.get("requires_restart", False),
                 })
@@ -133,14 +134,13 @@ def collect_section_entries(remote_runtimes, section_id, include_meta=False):
                 "path": entry["path"],
                 "requires_restart": entry["requires_restart"],
             }
-            # Reported only when the two differ, so the page can say the
-            # stored value is being ignored and offer to correct it. Without
-            # it the form is never dirty and Save stays disabled, leaving the
-            # bad value in place with nothing on screen to show for it.
-            if (
-                    entry["stored_value"] is not None
-                    and entry["stored_value"] != entry["raw_value"]
-            ):
+            # Asked of the same predicate the save path uses, not of the two
+            # values: a stored 1 under strict_type is unusable but compares
+            # equal to the substituted True, so comparing them offers no
+            # repair for the one input that needs it. Without the badge the
+            # form is never dirty and Save stays disabled, leaving the bad
+            # value in place with nothing on screen to show for it.
+            if stored_value_is_unusable(entry["prop_def"], entry["stored_value"]):
                 meta["stored_value"] = entry["stored_value"]
                 meta["value_invalid"] = True
             fields_meta[unique_key] = meta
