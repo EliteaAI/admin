@@ -29,7 +29,11 @@ from tools import auth  # pylint: disable=E0401
 from tools import api_tools, register_openapi  # pylint: disable=E0401
 
 from .plugin_config_schemas import SECTION_DEFINITIONS
-from ...utils.config_validation import validate_config_value
+from ...utils.config_validation import (
+    effective_config_value,
+    stored_value_is_unusable,
+    validate_config_value,
+)
 
 
 def get_nested(d, path):
@@ -92,15 +96,16 @@ def collect_section_entries(remote_runtimes, section_id, include_meta=False):
                     continue
                 #
                 path = prop_def.get("path", prop_key)
-                raw_value = get_nested(config, path)
-                if raw_value is None:
-                    raw_value = prop_def.get("default")
+                stored_value = get_nested(config, path)
+                raw_value = effective_config_value(prop_def, stored_value)
                 #
                 raw_entries.append({
                     "prop_key": prop_key,
                     "pylon_id": pylon_id,
                     "plugin_name": plugin_name,
                     "raw_value": raw_value,
+                    "stored_value": stored_value,
+                    "prop_def": prop_def,
                     "path": path,
                     "requires_restart": prop_def.get("requires_restart", False),
                 })
@@ -123,12 +128,22 @@ def collect_section_entries(remote_runtimes, section_id, include_meta=False):
         #
         values[unique_key] = entry["raw_value"]
         if include_meta:
-            fields_meta[unique_key] = {
+            meta = {
                 "plugin": entry["plugin_name"],
                 "pylon_id": entry["pylon_id"],
                 "path": entry["path"],
                 "requires_restart": entry["requires_restart"],
             }
+            # Asked of the same predicate the save path uses, not of the two
+            # values: a stored 1 under strict_type is unusable but compares
+            # equal to the substituted True, so comparing them offers no
+            # repair for the one input that needs it. Without the badge the
+            # form is never dirty and Save stays disabled, leaving the bad
+            # value in place with nothing on screen to show for it.
+            if stored_value_is_unusable(entry["prop_def"], entry["stored_value"]):
+                meta["stored_value"] = entry["stored_value"]
+                meta["value_invalid"] = True
+            fields_meta[unique_key] = meta
     #
     return values, fields_meta
 
@@ -235,7 +250,13 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
                     current_value = get_nested(config, path)
                     if current_value is None:
                         current_value = prop_def.get("default")
-                    if value == current_value:
+                    # An unusable stored value is reported as the default, so
+                    # setting the *other* value compares equal to what is
+                    # stored (False == 0) and would be skipped -- leaving the
+                    # bad value in place behind a "saved" response.
+                    if value == current_value and not stored_value_is_unusable(
+                            prop_def, get_nested(config, path),
+                    ):
                         continue
                     #
                     try:
