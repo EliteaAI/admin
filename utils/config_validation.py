@@ -33,12 +33,7 @@ def _error_message(error):
 
 
 def _cron_errors(field_schema, value):
-    """Reject cron expressions the scheduler would silently refuse to apply.
-
-    A cron the schedule row rejects leaves the saved config and the running
-    schedule permanently out of step, which is the very divergence the admin
-    settings exist to prevent.
-    """
+    """Reject cron expressions the scheduler would silently refuse to apply."""
     if field_schema.get("format") != "cron":
         return []
     if isinstance(value, str) and croniter.is_valid(value):
@@ -47,17 +42,7 @@ def _cron_errors(field_schema, value):
 
 
 def _boolean_errors(field_schema, value):
-    """Reject a boolean field holding something that is not one.
-
-    Truthiness is not a safe reading either way: 0 renders the switch Off while
-    a consumer that falls back runs the default On, and "false" renders it On.
-
-    Opt-in via ``strict_type``, because reporting the default is only honest
-    where the consumer actually falls back to it. Most boolean settings are
-    read with plain truthiness, and claiming a fallback they do not implement
-    would put the screen at odds with what is running -- the very divergence
-    this is here to close.
-    """
+    """Reject a boolean field holding something that is not one, when it opts in."""
     if not field_schema.get("strict_type"):
         return []
     if field_schema.get("type") != "boolean":
@@ -68,13 +53,7 @@ def _boolean_errors(field_schema, value):
 
 
 def stored_value_is_unusable(field_schema, value):
-    """Whether what is stored is something its consumer would reject.
-
-    Nothing stored is not something to repair: the consumer falls back to the
-    default and so does the screen, so they already agree. Reporting it as
-    unusable would badge a field the operator cannot act on and rewrite it on
-    every save of the section.
-    """
+    """Whether something is stored and its consumer would reject it."""
     if value is None:
         return False
     return bool(
@@ -83,22 +62,11 @@ def stored_value_is_unusable(field_schema, value):
 
 
 def effective_config_value(field_schema, value):
-    """The value the platform actually runs, given what is stored.
-
-    A stored value its own consumer would reject is not what runs -- the
-    consumer falls back to the default -- so showing the stored text would put
-    two admin screens permanently at odds. Reported as the default instead,
-    while the *stored* text is what a save still compares against, so saving
-    the displayed value repairs the config rather than being skipped as
-    unchanged.
-    """
+    """The value the platform actually runs, given what is stored."""
     default = field_schema.get("default")
     if value is None:
         return default
     if _cron_errors(field_schema, value) or _boolean_errors(field_schema, value):
-        # A field whose own default is missing or unusable has nothing better
-        # to offer. Reporting the default anyway hands the form a value its
-        # own validator rejects, so every save of the section fails for good.
         if default is not None and not stored_value_is_unusable(
                 field_schema, default,
         ):

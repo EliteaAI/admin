@@ -134,12 +134,6 @@ def collect_section_entries(remote_runtimes, section_id, include_meta=False):
                 "path": entry["path"],
                 "requires_restart": entry["requires_restart"],
             }
-            # Asked of the same predicate the save path uses, not of the two
-            # values: a stored 1 under strict_type is unusable but compares
-            # equal to the substituted True, so comparing them offers no
-            # repair for the one input that needs it. Without the badge the
-            # form is never dirty and Save stays disabled, leaving the bad
-            # value in place with nothing on screen to show for it.
             if stored_value_is_unusable(entry["prop_def"], entry["stored_value"]):
                 meta["stored_value"] = entry["stored_value"]
                 meta["value_invalid"] = True
@@ -250,10 +244,6 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
                     current_value = get_nested(config, path)
                     if current_value is None:
                         current_value = prop_def.get("default")
-                    # An unusable stored value is reported as the default, so
-                    # setting the *other* value compares equal to what is
-                    # stored (False == 0) and would be skipped -- leaving the
-                    # bad value in place behind a "saved" response.
                     if value == current_value and not stored_value_is_unusable(
                             prop_def, get_nested(config, path),
                     ):
