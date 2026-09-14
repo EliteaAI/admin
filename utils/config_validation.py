@@ -1,5 +1,6 @@
 """Validation helpers for schema-driven administration settings."""
 
+from croniter import croniter
 from jsonschema import Draft202012Validator
 
 
@@ -31,6 +32,48 @@ def _error_message(error):
     return f"{prefix}is invalid ({error.validator})"
 
 
+def _cron_errors(field_schema, value):
+    """Reject cron expressions the scheduler would silently refuse to apply."""
+    if field_schema.get("format") != "cron":
+        return []
+    if isinstance(value, str) and croniter.is_valid(value):
+        return []
+    return [{"path": "", "message": "must be a valid cron expression"}]
+
+
+def _boolean_errors(field_schema, value):
+    """Reject a boolean field holding something that is not one, when it opts in."""
+    if not field_schema.get("strict_type"):
+        return []
+    if field_schema.get("type") != "boolean":
+        return []
+    if isinstance(value, bool):
+        return []
+    return [{"path": "", "message": "must be true or false"}]
+
+
+def stored_value_is_unusable(field_schema, value):
+    """Whether something is stored and its consumer would reject it."""
+    if value is None:
+        return False
+    return bool(
+        _cron_errors(field_schema, value) or _boolean_errors(field_schema, value)
+    )
+
+
+def effective_config_value(field_schema, value):
+    """The value the platform actually runs, given what is stored."""
+    default = field_schema.get("default")
+    if value is None:
+        return default
+    if _cron_errors(field_schema, value) or _boolean_errors(field_schema, value):
+        if default is not None and not stored_value_is_unusable(
+                field_schema, default,
+        ):
+            return default
+    return value
+
+
 def validate_config_value(field_schema, value, *, max_errors=10):
     """Validate a field value against its optional ``value_schema`` contract.
 
@@ -38,20 +81,23 @@ def validate_config_value(field_schema, value, *, max_errors=10):
     alongside type information. ``value_schema`` keeps validation explicit and
     prevents existing fields from acquiring stricter behavior accidentally.
     """
+    errors = _cron_errors(field_schema, value)
+
     value_schema = field_schema.get("value_schema")
     if not value_schema:
-        return []
+        return errors[:max_errors]
 
     Draft202012Validator.check_schema(value_schema)
     validator = Draft202012Validator(value_schema)
-    errors = sorted(
+    schema_errors = sorted(
         validator.iter_errors(value),
         key=lambda error: tuple(str(part) for part in error.absolute_path),
     )
-    return [
+    errors.extend(
         {
             "path": ".".join(str(part) for part in error.absolute_path),
             "message": _error_message(error),
         }
-        for error in errors[:max_errors]
-    ]
+        for error in schema_errors
+    )
+    return errors[:max_errors]
