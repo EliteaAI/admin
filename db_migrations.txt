@@ -165,3 +165,19 @@ TRUNCATE TABLE public.auth_core__project_role_permission;
 
 # Step 7: Reclaim disk space (~2 GB)
 VACUUM FULL public.auth_core__project_role_permission;
+
+# 2.0.6 -> 2.0.7
+
+# Issue #5262: provision one platform-owned, non-expiring access token named
+# 'elitea-system' for every user that lacks one. Without it the Support Assistant,
+# internal MCP toolkits, code nodes and scheduled agent runs fail for users who never
+# created a PAT (pat_missing / "User token not found. Please create user_token").
+# Per-user, not per-project, so there is no project_id param.
+# No schema change. Idempotent: guarded by NOT EXISTS on (user_id, name), so a re-run
+# inserts nothing. New users get the token at creation time; this task only backfills
+# accounts that already existed.
+# Pre-flight - expect 0; a non-zero result means pre-existing tokens carry the reserved
+# name and will be adopted rather than duplicated:
+SELECT count(*) FROM public.auth_core__token WHERE name = 'elitea-system';
+Run admin task migrate_user_system_tokens with param: dry_run
+Run admin task migrate_user_system_tokens
