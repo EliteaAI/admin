@@ -44,14 +44,27 @@ def migrate_user_system_tokens(*args, **kwargs):
             )
             #
             log.info(
-                "Users: %s total, %s already had a token, %s created, %s adopted",
+                "Users: %s total, %s already had a token, %s created",
                 result["users_total"],
                 result["already_present"],
                 result["created"],
-                result["squatters_adopted"],
             )
+            #
+            if result["reserved_name_conflicts"]:
+                log.warning(
+                    "%s token(s) hold the reserved name with an expiry; those "
+                    "users are healed on next use, not here",
+                    result["reserved_name_conflicts"],
+                )
         except:  # pylint: disable=W0702
-            log.exception("Got exception, stopping task (on timeout RPC will continue)")
+            # Re-raise: the operator has to be able to tell a backfill that did
+            # nothing from one that ran. A release deployed on the strength of a
+            # task that only looked successful leaves users without the
+            # credential the platform now assumes they have. On an RPC timeout
+            # the remote side keeps going, so re-run the task to confirm.
+            log.exception("Got exception, stopping task")
+            raise
         #
-        end_ts = time.time()
-        log.info("Exiting (duration = %s)", end_ts - start_ts)
+        finally:
+            end_ts = time.time()
+            log.info("Exiting (duration = %s)", end_ts - start_ts)

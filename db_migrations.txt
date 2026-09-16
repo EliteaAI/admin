@@ -173,11 +173,21 @@ VACUUM FULL public.auth_core__project_role_permission;
 # internal MCP toolkits, code nodes and scheduled agent runs fail for users who never
 # created a PAT (pat_missing / "User token not found. Please create user_token").
 # Per-user, not per-project, so there is no project_id param.
-# No schema change. Idempotent: guarded by NOT EXISTS on (user_id, name), so a re-run
-# inserts nothing. New users get the token at creation time; this task only backfills
-# accounts that already existed.
-# Pre-flight - expect 0; a non-zero result means pre-existing tokens carry the reserved
-# name and will be adopted rather than duplicated:
-SELECT count(*) FROM public.auth_core__token WHERE name = 'elitea-system';
+# Idempotent: guarded by NOT EXISTS on (user_id, name), so a re-run inserts nothing.
+# New users get the token at creation time; this task only backfills accounts that
+# already existed. The task now fails loudly - a run that reports success really did
+# reach every user.
+# The schema change is not here: auth_core alembic revision 202609161200 runs at
+# pylon_auth boot. It renames any pre-existing token that already carried the reserved
+# name to 'elitea-system-conflict-<id>' (uuid and expiry untouched, so it stays an
+# ordinary token of its owner) and then adds a partial unique index enforcing one
+# system token per user.
+# Pre-flight, after pylon_auth is up - expect 0 rows. A row with a non-null expires
+# is a user's own token that was renamed out of the reserved namespace; it still
+# works and is still deletable, but tell its owner. A row with expires IS NULL only
+# appears on an environment that ran a pre-release build of this branch (the
+# platform's own rows got evicted); those are safe to delete.
+SELECT id, user_id, name, expires FROM public.auth_core__token
+  WHERE name LIKE 'elitea-system-conflict-%';
 Run admin task migrate_user_system_tokens with param: dry_run
 Run admin task migrate_user_system_tokens
