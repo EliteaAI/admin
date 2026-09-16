@@ -23,16 +23,38 @@ from tools import context  # pylint: disable=E0401
 
 from .logs import make_logger
 
+DRY_RUN_PARAM = "dry_run"
+
+
+def is_dry_run(param):
+    """Read the rehearsal flag as an exact token, or refuse to guess.
+
+    A near miss - "dryrun", "not_dry_run" - is resolved neither way: the
+    operator asked for something this task does not offer, and writing tokens
+    on the strength of a typo is not the answer.
+    """
+    token = (param or "").strip().lower()
+    #
+    if not token:
+        return False
+    if token == DRY_RUN_PARAM:
+        return True
+    #
+    raise ValueError(
+        f"Unrecognized param {param!r}: pass {DRY_RUN_PARAM!r} to rehearse, "
+        "or nothing at all to write",
+    )
+
 
 def migrate_user_system_tokens(*args, **kwargs):
-    """Give every user without one a non-expiring system access token. Param: 'dry_run'. Safe to re-run."""
+    """Give every user without one a non-expiring system access token. Param: 'dry_run' or nothing. Safe to re-run."""
     #
     with make_logger() as log:
         log.info("Starting")
         start_ts = time.time()
         #
         try:
-            dry_run = "dry_run" in kwargs.get("param", "")
+            dry_run = is_dry_run(kwargs.get("param"))
             #
             log.info("Backfilling user system tokens (dry_run=%s)", dry_run)
             #

@@ -194,5 +194,7 @@ VACUUM FULL public.auth_core__project_role_permission;
 # owners and leave the rows alone.
 SELECT id, user_id, name, expires FROM public.auth_core__token
   WHERE name LIKE 'elitea-system-conflict-%';
+# The param is matched exactly: 'dry_run' rehearses, empty writes, and anything else
+# stops the task rather than guess which of the two you meant.
 Run admin task migrate_user_system_tokens with param: dry_run
-Run admin task migrate_user_system_tokens
+Run admin task migrate_user_system_tokens with an empty param

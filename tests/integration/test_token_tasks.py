@@ -170,10 +170,34 @@ def test_no_param_is_a_real_run(run):
     assert "Created 3 token(s) of 3 missing" in log.text
 
 
-def test_an_unrelated_param_is_not_a_dry_run(run):
-    rpc, _ = run(param="something_else", result=result())
+@pytest.mark.parametrize("param", ["dry_run", "DRY_RUN", "  dry_run  "])
+def test_the_flag_is_read_regardless_of_case_and_padding(run, param):
+    rpc, _ = run(param=param, result=result(dry_run=True, created=0))
 
-    assert rpc.calls == [{"dry_run": False}]
+    assert rpc.calls == [{"dry_run": True}]
+
+
+@pytest.mark.parametrize("param", [
+    "not_dry_run",
+    "dryrun",
+    "dry-run",
+    "dry_run=true",
+    "dry_run please",
+    "something_else",
+])
+def test_a_param_that_is_not_the_flag_is_refused(run, param):
+    """Neither reading is safe to assume, so the task stops instead of writing."""
+    with pytest.raises(ValueError, match="Unrecognized param"):
+        run(param=param, result=result())
+
+
+def test_a_refused_param_reaches_no_rpc(run):
+    import tools  # noqa: F401
+
+    with pytest.raises(ValueError):
+        run(param="dryrun", result=result())
+
+    assert tools.context.rpc_manager.calls == []
 
 
 # --- reporting -------------------------------------------------------------
