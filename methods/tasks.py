@@ -33,6 +33,7 @@ from ..tasks import lifecycle_tasks
 from ..tasks import project_tasks
 from ..tasks import mesh_tasks
 from ..tasks import role_migration
+from ..tasks import token_tasks
 
 
 # ── Legacy task-to-group mapping ──────────────────────────────────────────
@@ -135,6 +136,12 @@ class Method:  # pylint: disable=E1101,R0903
         #
         for task_name, task_func in local_admin_tasks:
             self.register_admin_task(task_name, task_func)
+        #
+        self.register_admin_task(
+            "migrate_user_system_tokens",
+            token_tasks.migrate_user_system_tokens,
+            group="R-2.0.7",
+        )
 
     @web.method()
     def register_admin_task(self, name, func, group=None):
