@@ -37,18 +37,41 @@ def migrate_user_system_tokens(*args, **kwargs):
             log.info("Backfilling user system tokens (dry_run=%s)", dry_run)
             #
             # The statement lives in auth_core so the write stays on the side
-            # that owns auth_core__token. Guarded by NOT EXISTS on
-            # (user_id, name), so a re-run inserts nothing.
+            # that owns auth_core__token. Every insert is guarded by the
+            # one-per-user index, so a re-run inserts nothing.
             result = context.rpc_manager.timeout(300).auth_backfill_system_tokens(
                 dry_run=dry_run,
             )
             #
             log.info(
-                "Users: %s total, %s already had a token, %s created",
+                "Users: %s total, %s already had a token, %s suspended and skipped",
                 result["users_total"],
                 result["already_present"],
-                result["created"],
+                result["skipped_suspended"],
             )
+            #
+            if dry_run:
+                # "created" is 0 on a dry run and saying it out loud is the point:
+                # an operator reading this log has to be able to tell a rehearsal
+                # from the real thing.
+                log.info(
+                    "Dry run: %s user(s) would get a token, none written",
+                    result["missing"],
+                )
+            else:
+                log.info(
+                    "Created %s token(s) of %s missing",
+                    result["created"],
+                    result["missing"],
+                )
+                #
+                if result["created"] != result["missing"]:
+                    # Provisioned by a login, or by a second run of this task,
+                    # between the scan and the insert. Not an error.
+                    log.info(
+                        "%s user(s) were provisioned elsewhere mid-run",
+                        result["missing"] - result["created"],
+                    )
             #
             if result["reserved_name_conflicts"]:
                 log.warning(
