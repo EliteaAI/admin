@@ -198,3 +198,31 @@ SELECT id, user_id, name, expires FROM public.auth_core__token
 # stops the task rather than guess which of the two you meant.
 Run admin task migrate_user_system_tokens with param: dry_run
 Run admin task migrate_user_system_tokens with an empty param
+
+# Rolling this back
+# Not the inverse of the deploy order. The 'auth' plugin is what hides these tokens
+# from the Personal Tokens page, so reverting it while the rows exist turns every one
+# of them into a visible, deletable non-expiring token of that user. But auth_init and
+# auth_core are what create the rows, so deleting them first only means the next login
+# puts them back. Stop the writers, then delete, then remove the hiding:
+#   1. Revert admin, so nobody re-runs the task mid-rollback.
+#   2. Revert auth_init, then auth_core. Leave 'auth' deployed: the rows are still
+#      hidden and undeletable while they exist. Agent runs go back to reporting
+#      'User token not found' for users with no token of their own - the 2.0.6
+#      behaviour, not a new fault.
+#   3. Delete the rows (below). No admin task undoes the backfill; this is the step
+#      most likely to be forgotten.
+#   4. Revert auth, elitea_core, projects.
+#   5. Optional: downgrade auth_core revision 202609161200, which drops the unique
+#      index only. Leaving it is harmless - it constrains rows nothing creates.
+# Skipping step 3 is fine if you intend to roll forward again shortly: the rows are
+# inert under 2.0.6 code. Skipping step 3 but doing step 4 is the exposure above.
+# Safe by construction: the name is reserved from revision 202609161200 onward, so
+# every row holding it was created by the platform, never by a user. Left commented
+# on purpose - this statement belongs to a rollback, and an upgrade pass that runs it
+# would delete the tokens the task just created:
+#   DELETE FROM public.auth_core__token WHERE name = 'elitea-system';
+# Tokens renamed to 'elitea-system-conflict-<id>' by the revision are NOT restored by
+# any of this - renaming them back would recreate the duplicates the index forbids.
+# They keep working. The pylon_auth boot log names the id and owner of every row the
+# revision renamed; that log is the only record of the original name.
