@@ -38,7 +38,11 @@ class Module(module.ModuleModel):
     def init(self):
         """ Init module """
         log.info("Initializing module")
+        import re  # pylint: disable=C0415
         from tools import auth  # pylint: disable=E0401,C0415
+
+        # Register public route for custom theme API (needed for pre-login branding)
+        auth.add_public_rule({"uri": re.escape("/api/v2/admin/custom_theme/prompt_lib")})
         # Run DB migrations
         # db_migrations.run_db_migrations(self, db.url)
         #
