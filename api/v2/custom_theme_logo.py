@@ -71,6 +71,9 @@ class AdminAPI(api_tools.APIModeHandler):
         if not elitea_core:
             return {"error": "elitea_core module not found"}, 500
 
+        if not hasattr(elitea_core, "platform_logo_path"):
+            return {"error": "platform_logo_path not configured in elitea_core"}, 500
+
         logo_path = elitea_core.platform_logo_path / filename
 
         if not logo_path.exists():
@@ -131,6 +134,9 @@ class AdminAPI(api_tools.APIModeHandler):
             elitea_core = self._get_elitea_core_module()
             if not elitea_core:
                 return {"error": "elitea_core module not found"}, 500
+
+            if not hasattr(elitea_core, "platform_logo_path"):
+                return {"error": "platform_logo_path not configured in elitea_core"}, 500
 
             logo_dir = elitea_core.platform_logo_path
 
@@ -194,7 +200,7 @@ class AdminAPI(api_tools.APIModeHandler):
         try:
             # Get elitea_core module for platform_logo_path
             elitea_core = self._get_elitea_core_module()
-            if elitea_core:
+            if elitea_core and hasattr(elitea_core, "platform_logo_path"):
                 logo_dir = elitea_core.platform_logo_path
 
                 # Delete all logo files
@@ -209,6 +215,11 @@ class AdminAPI(api_tools.APIModeHandler):
 
         # Update config to remove logo_url
         theme_data["logo_url"] = None
+
+        # If no palette exists either, disable the theme entirely
+        if not theme_data.get("palette"):
+            theme_data["enabled"] = False
+
         try:
             update_custom_theme_config(self.module, theme_data)
         except RuntimeError as e:
