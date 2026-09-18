@@ -105,6 +105,13 @@ SECTION_DEFINITIONS = {
         "description": "Control Voice-to-Voice, Text-to-Voice, and Voice-to-Text features environment-wide.",
         "always_visible": True,
     },
+    "chat_mentions": {
+        "title": "Chat Mentions",
+        "order": 90,
+        "icon": "alternate_email",
+        "description": "Configure trigger characters for chat mention features (toolkits, skills, participants, users).",
+        "always_visible": True,
+    },
     "maintenance": {
         "title": "Maintenance",
         "order": 91,
