@@ -106,6 +106,7 @@ class RPC:
             auth.update_project_user_roles(project_id, user_id, [])
         # Fired here rather than at each call site: the user-deletion cascade tasks reach
         # this RPC directly, and subscribers' per-project cleanup must run for them too.
+        log.info("[admin_roles] firing user_removed_from_project project_id=%s user_ids=%s", project_id, user_ids)
         self.context.event_manager.fire_event(
             "user_removed_from_project",
             {'project_id': project_id, 'user_ids': list(user_ids)},

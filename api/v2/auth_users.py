@@ -83,6 +83,25 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         #
         if action == "delete":
             for user in data["users"]:
+                # Resolve membership before auth.delete_user so handlers can
+                # clean up project data without racing the deletion.
+                # fire_event only enqueues; handlers run after this request
+                # returns, by which point auth.delete_user has already run.
+                try:
+                    all_projects = self.module.context.rpc_manager.call.project_list(
+                        filter_={'create_success': True}
+                    ) or []
+                    all_ids = [p['id'] for p in all_projects]
+                    project_ids = self.module.context.rpc_manager.call.admin_check_user_in_projects(
+                        all_ids, user["id"]
+                    )
+                except Exception:  # pylint: disable=broad-except
+                    log.exception("auth_users: failed to resolve project membership for user %s", user["id"])
+                    project_ids = []
+                self.module.context.event_manager.fire_event(
+                    "user_deleted",
+                    {"user_id": user["id"], "project_ids": project_ids},
+                )
                 auth.delete_user(user["id"])
         #
         if action == "create":
