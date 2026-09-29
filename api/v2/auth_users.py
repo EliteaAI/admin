@@ -83,6 +83,10 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         #
         if action == "delete":
             for user in data["users"]:
+                self.module.context.event_manager.fire_event(
+                    "user_deleted",
+                    {"user_id": user["id"]},
+                )
                 auth.delete_user(user["id"])
         #
         if action == "create":
