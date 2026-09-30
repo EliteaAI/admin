@@ -142,11 +142,7 @@ class Method:  # pylint: disable=E1101,R0903
             token_tasks.migrate_user_system_tokens,
             group="R-2.0.7",
         )
-        self.register_admin_task(
-            "prune_system_tokens",
-            token_tasks.prune_system_tokens,
-            group="R-2.0.7",
-        )
+        self.register_admin_task("prune_system_tokens", token_tasks.prune_system_tokens)
 
     @web.method()
     def register_admin_task(self, name, func, group=None):
