@@ -296,12 +296,74 @@ def test_rotation_order_is_add_then_vault_then_delete(world):
     assert set(kinds[2:]) == {"delete"}
 
 
-def test_previous_comes_from_vault_not_highest_id(world):
-    """Vault holds the oldest row (e.g. manual reset); that is what predicts use, so it survives."""
+def test_vault_and_newest_both_survive_when_they_differ(world):
+    """Vault holds the oldest row (e.g. manual reset) while get_project_system_token hands out
+    the newest; both may be in flight, so this one rotation keeps three rows."""
     user_id, ids = world.add_project(5, 4, vault_token="oldest")
     world.mod.rotate_project_tokens()
     remaining = world.auth.ids_of(user_id)
-    assert ids[0] in remaining and ids[-1] not in remaining
+    assert remaining == [ids[0], ids[-1], max(remaining)]
+    world.mod.rotate_project_tokens()
+    assert len(world.auth.ids_of(user_id)) == 2  # converges on the next cycle
+
+
+# --- keep_previous=False: incident hard cut ----------------------------------
+
+
+def test_hard_cut_leaves_only_the_new_token(world):
+    user_id, ids = world.add_project(5, 4)
+    world.mod.rotate_project_tokens(keep_previous=False)
+    remaining = world.auth.ids_of(user_id)
+    assert len(remaining) == 1 and remaining[0] not in ids
+    assert world.vaults[5].secrets["auth_token"] == f"jwt-{remaining[0]}"
+
+
+def test_hard_cut_admin(world):
+    world.auth.seed(ADMIN_USER, 3)
+    world.vaults[None].secrets["auth_token"] = f"jwt-{max(world.auth.ids_of(ADMIN_USER))}"
+    assert world.mod.rotate_admin_token(keep_previous=False) == 3
+    assert len(world.auth.ids_of(ADMIN_USER)) == 1
+
+
+def test_hard_cut_still_spares_named_and_expiring_tokens(world):
+    user_id, _ = world.add_project(5, 2)
+    named = world.auth.seed(user_id, 1, name="my-ci")[0]
+    expiring = world.auth.seed(user_id, 1, expires="2030-01-01")[0]
+    world.mod.rotate_project_tokens(keep_previous=False)
+    assert {named, expiring} <= set(world.auth.ids_of(user_id))
+    assert len(world.auth.ids_of(user_id)) == 3
+
+
+# --- project_system_token: the single pick rule -------------------------------
+
+
+def test_pick_is_newest_rotatable_and_matches_vault_after_rotation(world):
+    world.add_project(5, 3)
+    world.mod.rotate_project_tokens()
+    assert world.mod.project_system_token(5) == world.vaults[5].secrets["auth_token"]
+
+
+def test_pick_ignores_newer_named_and_expiring_tokens(world):
+    """A higher-id 'api' token with an expiry, or any other name, must not win the pick."""
+    user_id, ids = world.add_project(5, 2)
+    world.auth.seed(user_id, 1, expires="2030-01-01")
+    world.auth.seed(user_id, 1, name="my-ci")
+    assert world.mod.current_token_id(user_id) == ids[-1]
+    assert world.mod.project_system_token(5) == f"jwt-{ids[-1]}"
+
+
+def test_pick_creates_when_missing_unless_told_not_to(world):
+    user_id, _ = world.add_project(5, 0)
+    assert world.mod.project_system_token(5, create_if_not_exists=False) is None
+    assert world.auth.ids_of(user_id) == []
+    token = world.mod.project_system_token(5)
+    assert token == f"jwt-{world.auth.ids_of(user_id)[0]}"
+    assert world.auth.tokens[world.auth.ids_of(user_id)[0]]["name"] == "api"
+
+
+def test_pick_is_none_without_system_user(world):
+    assert world.mod.project_system_token(77) is None
+    assert world.auth.events == []
 
 
 def test_unresolvable_vault_falls_back_to_highest_snapshot_id(world):
@@ -464,3 +526,54 @@ def test_prune_logs_progress_within_a_large_backlog(world, prune):
     log = prune("dry_run=false,project_id=1")
     assert "... 10 of 34 token(s) deleted" in log.text
     assert "... 30 of 34 token(s) deleted" in log.text
+
+
+# --- recreate_project_tokens task param -------------------------------------
+
+
+class RotateRpc:
+    def __init__(self):
+        self.calls = []
+
+    def timeout(self, _seconds):
+        return self
+
+    def admin_rotate_tokens(self, **kwargs):
+        self.calls.append(kwargs)
+
+
+@pytest.fixture
+def recreate(plugin_root, world, monkeypatch):
+    tasks_package = types.ModuleType(TASKS_PACKAGE)
+    tasks_package.__path__ = [str(plugin_root / "tasks")]
+    logs_stub = types.ModuleType(f"{TASKS_PACKAGE}.logs")
+    logs_stub.make_logger = StubMakeLogger
+    monkeypatch.setitem(sys.modules, TASKS_PACKAGE, tasks_package)
+    monkeypatch.setitem(sys.modules, f"{TASKS_PACKAGE}.logs", logs_stub)
+    try:
+        mod = importlib.import_module(f"{TASKS_PACKAGE}.project_tasks")
+        rpc = RotateRpc()
+        mod.context = types.SimpleNamespace(rpc_manager=rpc)
+
+        def _run(param=None):
+            kwargs = {} if param is None else {"param": param}
+            mod.recreate_project_tokens(**kwargs)
+            return rpc.calls
+        yield _run
+    finally:
+        for name in (f"{TASKS_PACKAGE}.project_tasks", f"{TASKS_PACKAGE}.lifecycle_tasks"):
+            sys.modules.pop(name, None)
+
+
+@pytest.mark.parametrize("param,expected", [
+    (None, True), ("", True), ("keep_previous=true", True),
+    ("keep_previous=false", False), ('{"keep_previous": false}', False),
+])
+def test_recreate_keep_previous_param(recreate, param, expected):
+    assert recreate(param) == [{"keep_previous": expected}]
+
+
+@pytest.mark.parametrize("param", ["keep_previous=maybe", "revoke_previous=true"])
+def test_recreate_bad_param_is_refused_before_rotating(recreate, param):
+    with pytest.raises(ValueError):
+        recreate(param)

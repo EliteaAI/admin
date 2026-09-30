@@ -85,6 +85,24 @@ def rotatable_tokens(user_id):
     ]
 
 
+def current_token_id(user_id):
+    """ Id of the token predicts hand out: the newest rotatable one """
+    return max((item["id"] for item in rotatable_tokens(user_id)), default=None)
+
+
+def project_system_token(project_id, create_if_not_exists=True):
+    """ Encoded current token of the project system user, or None """
+    user_id = project_user_id(project_id)
+    if user_id is None:
+        return None
+    token_id = current_token_id(user_id)
+    if token_id is None:
+        if not create_if_not_exists:
+            return None
+        token_id = auth.add_token(user_id, ROTATED_TOKEN_NAME)
+    return auth.encode_token(token_id)
+
+
 PROGRESS_EVERY = 1000
 
 
@@ -104,33 +122,34 @@ def prune_tokens(tokens, keep_ids, dry_run, task_log=None):
     return deleted
 
 
-def rotate_user_token(user_id, vault_client):
-    """ Mint a new token into Vault, then revoke all older ones except the previous """
+def rotate_user_token(user_id, vault_client, keep_previous=True):
+    """ Mint a new token into Vault, then revoke older ones (all of them unless keep_previous) """
     snapshot = rotatable_tokens(user_id)
     secrets = vault_client.get_secrets()
-    prev_id = vault_token_id(secrets, user_id) or max(
-        (item["id"] for item in snapshot), default=None,
-    )
+    # Vault readers and current_token_id() callers may each hold a different one in flight
+    keep_ids = set()
+    if keep_previous:
+        keep_ids = {vault_token_id(secrets, user_id), max((item["id"] for item in snapshot), default=None)}
     #
     token_id = auth.add_token(user_id, ROTATED_TOKEN_NAME)
     secrets["auth_token"] = auth.encode_token(token_id)
     vault_client.set_secrets(secrets)
     # Only pre-existing rows are pruned, so concurrently minted tokens survive
-    return prune_tokens(snapshot, {prev_id}, dry_run=False)
+    return prune_tokens(snapshot, keep_ids, dry_run=False)
 
 
-def rotate_admin_token():
+def rotate_admin_token(keep_previous=True):
     """ Rotate the admin-space auth_token; returns revoked count or None """
     user_id = admin_user_id()
     if user_id is None:
         log.warning("Cannot rotate admin token: system user not found")
         return None
-    revoked = rotate_user_token(user_id, VaultClient())
+    revoked = rotate_user_token(user_id, VaultClient(), keep_previous)
     log.info("Admin auth_token rotated, %s old token(s) revoked", revoked)
     return revoked
 
 
-def rotate_project_tokens():
+def rotate_project_tokens(keep_previous=True):
     """ Rotate auth_token of every project; one failing project does not stop the rest """
     stats = {"rotated": 0, "skipped": 0, "failed": 0, "revoked": 0}
     for project_id in list_project_ids():
@@ -141,7 +160,7 @@ def rotate_project_tokens():
             stats["skipped"] += 1
             continue
         try:
-            stats["revoked"] += rotate_user_token(user_id, project_vault(project_id))
+            stats["revoked"] += rotate_user_token(user_id, project_vault(project_id), keep_previous)
             stats["rotated"] += 1
         except Exception:  # pylint: disable=W0703
             log.exception("Failed to rotate auth_token of project %s", project_id)

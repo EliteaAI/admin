@@ -25,17 +25,22 @@ from ..utils import system_tokens
 class RPC:
 
     @web.rpc("admin_rotate_tokens", "rotate_tokens")
-    def rotate_tokens(self):  # pylint: disable=R0201
-        """Rotate auth tokens for the admin space and all projects, keeping the previous one."""
-        system_tokens.rotate_admin_token()
-        system_tokens.rotate_project_tokens()
+    def rotate_tokens(self, keep_previous=True):  # pylint: disable=R0201
+        """Rotate auth tokens for the admin space and all projects; keep_previous=False is a hard cut."""
+        system_tokens.rotate_admin_token(keep_previous)
+        system_tokens.rotate_project_tokens(keep_previous)
 
     @web.rpc("admin_rotate_admin_token", "rotate_admin_token")
-    def rotate_admin_token(self):  # pylint: disable=R0201
+    def rotate_admin_token(self, keep_previous=True):  # pylint: disable=R0201
         """Rotate the admin-level auth_token (system@centry.user)."""
-        system_tokens.rotate_admin_token()
+        system_tokens.rotate_admin_token(keep_previous)
 
     @web.rpc("admin_rotate_project_tokens", "rotate_project_tokens")
-    def rotate_project_tokens(self):  # pylint: disable=R0201
+    def rotate_project_tokens(self, keep_previous=True):  # pylint: disable=R0201
         """Rotate auth tokens for all projects."""
-        system_tokens.rotate_project_tokens()
+        system_tokens.rotate_project_tokens(keep_previous)
+
+    @web.rpc("admin_get_project_system_token", "get_project_system_token")
+    def get_project_system_token(self, project_id, create_if_not_exists=True):  # pylint: disable=R0201
+        """Encoded current 'api' token of the project system user, or None; the one pick rule rotation relies on."""
+        return system_tokens.project_system_token(project_id, create_if_not_exists)
