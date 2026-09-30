@@ -116,14 +116,17 @@ def token_tasks(plugin_root):
     sys.modules.update(installed)
 
     previous_context = getattr(tools, "context", None)
+    previous_log = getattr(tools, "log", None)
     tools.context = types.SimpleNamespace(rpc_manager=None)
+    tools.log = RecordingLog()  # token_tasks imports lifecycle_tasks, which needs tools.log
 
     try:
         yield importlib.import_module(f"{PACKAGE}.token_tasks")
     finally:
-        for name in list(installed) + [f"{PACKAGE}.token_tasks"]:
+        for name in list(installed) + [f"{PACKAGE}.token_tasks", f"{PACKAGE}.lifecycle_tasks"]:
             sys.modules.pop(name, None)
         tools.context = previous_context
+        tools.log = previous_log
 
 
 @pytest.fixture

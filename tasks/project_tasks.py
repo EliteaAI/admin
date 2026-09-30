@@ -21,6 +21,7 @@ import time
 
 from tools import context, log  # pylint: disable=E0401
 
+from .lifecycle_tasks import parse_param, _to_bool
 from .logs import make_logger
 
 
@@ -122,8 +123,14 @@ def sync_pgvector_credentials(*args, **kwargs):
 
 
 def recreate_project_tokens(*args, **kwargs):
-    """Rotate auth tokens for admin and all projects. No params. Destructive: invalidates old tokens."""
-    context.rpc_manager.timeout(5 * 60).admin_rotate_tokens()
+    """Rotate auth tokens for admin and all projects, keeping the new and previous one. Param keep_previous=false (incident hard cut) revokes every old token in one run: in-flight predicts may fail, and the 60s auth cache still applies."""
+    params = parse_param(kwargs.get("param"))
+    unknown = set(params) - {"keep_previous"}
+    if unknown:
+        raise ValueError(f"Unknown param(s): {sorted(unknown)}; allowed: ['keep_previous']")
+    keep_previous = _to_bool(params.get("keep_previous"), "keep_previous", default=True)
+    log.info("Rotating system tokens (keep_previous=%s)", keep_previous)
+    context.rpc_manager.timeout(5 * 60).admin_rotate_tokens(keep_previous=keep_previous)
 
 
 def delete_ghost_users(*args, **kwargs):  # pylint: disable=W0613,R0914
