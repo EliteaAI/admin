@@ -122,7 +122,7 @@ def sync_pgvector_credentials(*args, **kwargs):
 
 
 def recreate_project_tokens(*args, **kwargs):
-    """Rotate auth tokens for admin and all projects. No params. Destructive: invalidates old tokens."""
+    """Rotate auth tokens for admin and all projects, keeping only the new and previous one. No params. A leaked token needs two runs to be revoked."""
     context.rpc_manager.timeout(5 * 60).admin_rotate_tokens()
 
 
