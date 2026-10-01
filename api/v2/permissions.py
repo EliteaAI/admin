@@ -38,6 +38,12 @@ def group_roles_by_permissions(auth_permissions, roles):
     return roles_to_permissions
 
 
+def known_rows(rows):
+    # Drop names nothing registers or checks (e.g. matrix group prefixes) so they are never persisted.
+    known = set(auth.local_permissions)
+    return [row for row in rows or [] if row.get('name') in known]
+
+
 class AdminAPI(api_tools.APIModeHandler):
     @register_openapi(
         name="Get Mode Permissions",
@@ -88,7 +94,7 @@ class AdminAPI(api_tools.APIModeHandler):
         }})
     def put(self, target_mode):  # pylint: disable=R0201
         """ Process """
-        new_data = request.get_json()
+        new_data = known_rows(request.get_json())
         old_data = self.get(target_mode)["rows"]
         old_permissions = set(
             (r, p['name']) for p in old_data for r, v in p.items() if v)
@@ -210,7 +216,7 @@ class ProjectAPI(api_tools.APIModeHandler):
         }})
     def put(self, project_id):  # pylint: disable=R0201
         """ Process """
-        new_data = request.get_json()
+        new_data = known_rows(request.get_json())
         old_data = self.get(project_id=project_id)["rows"]
         old_permissions = set(
             (r, p['name']) for p in old_data for r, v in p.items() if v)
@@ -291,7 +297,7 @@ class PublicProjectAPI(api_tools.APIModeHandler):
         project_id = self._get_public_project_id()
         if project_id is None:
             return {"error": "Public project not configured"}, 404
-        new_data = request.get_json()
+        new_data = known_rows(request.get_json())
         roles = auth.list_project_roles(project_id)
         role_name_to_id = {r['name']: r['id'] for r in roles}
         # Clear existing overrides
@@ -381,7 +387,7 @@ class SupportProjectAPI(api_tools.APIModeHandler):
         project_id = self._get_support_project_id()
         if project_id is None:
             return {"error": "Support project not configured"}, 404
-        new_data = request.get_json()
+        new_data = known_rows(request.get_json())
         roles = auth.list_project_roles(project_id)
         role_name_to_id = {r['name']: r['id'] for r in roles}
         # Clear existing overrides
