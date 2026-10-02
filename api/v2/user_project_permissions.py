@@ -38,7 +38,6 @@ class AdminAPI(api_tools.APIModeHandler):
         "recommended_roles": {
             c.ADMINISTRATION_MODE: {"admin": True, "viewer": False, "editor": False},
             c.DEFAULT_MODE: {"admin": False, "viewer": False, "editor": False},
-            "developer": {"admin": False, "viewer": False, "editor": False},
         }})
     def get(self):  # pylint: disable=R0201
         """ Process """
@@ -88,7 +87,6 @@ class AdminAPI(api_tools.APIModeHandler):
         "recommended_roles": {
             c.ADMINISTRATION_MODE: {"admin": True, "viewer": False, "editor": False},
             c.DEFAULT_MODE: {"admin": False, "viewer": False, "editor": False},
-            "developer": {"admin": False, "viewer": False, "editor": False},
         }})
     def put(self):  # pylint: disable=R0201
         """ Process """

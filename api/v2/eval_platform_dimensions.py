@@ -36,12 +36,10 @@ from tools import auth, api_tools, register_openapi  # pylint: disable=E0401
 _VIEW_ROLES = {
     "administration": {"super_admin": True, "admin": True, "viewer": True, "editor": True},
     "default": {"super_admin": True, "admin": True, "viewer": True, "editor": True},
-    "developer": {"super_admin": True, "admin": True, "viewer": True, "editor": True},
 }
 _WRITE_ROLES = {
     "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
     "default": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
-    "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
 }
 
 

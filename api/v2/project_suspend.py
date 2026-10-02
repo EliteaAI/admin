@@ -37,7 +37,6 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903,C0115
         "recommended_roles": {
             "administration": {"admin": True, "viewer": False, "editor": False},
             "default": {"admin": True, "viewer": False, "editor": False},
-            "developer": {"admin": True, "viewer": False, "editor": False},
         }})
     @api_tools.endpoint_metrics
     def put(self, project_id: int, **kwargs):
