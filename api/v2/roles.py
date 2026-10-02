@@ -28,6 +28,14 @@ from tools import auth, db, api_tools, register_openapi  # pylint: disable=E0401
 
 from ...utils import filter_restricted_roles
 
+ADMIN_ROLE_MODES = ("administration", "default")
+
+
+def _unknown_mode(target_mode):
+    if target_mode in ADMIN_ROLE_MODES:
+        return None
+    return {"error": f"Unknown role mode: {target_mode}"}, 400
+
 
 class AdminAPI(api_tools.APIModeHandler):
     @register_openapi(
@@ -43,9 +51,10 @@ class AdminAPI(api_tools.APIModeHandler):
         "recommended_roles": {
             "administration": {"admin": True, "viewer": True, "editor": True},
             "default": {"admin": True, "viewer": True, "editor": True},
-            "developer": {"admin": True, "viewer": True, "editor": True},
         }})
     def get(self, target_mode: str):
+        if (error := _unknown_mode(target_mode)):
+            return error
         roles = auth.get_roles(target_mode)
         return filter_restricted_roles(roles)
     
@@ -62,10 +71,11 @@ class AdminAPI(api_tools.APIModeHandler):
         "recommended_roles": {
             "administration": {"admin": True, "viewer": False, "editor": False},
             "default": {"admin": True, "viewer": False, "editor": False},
-            "developer": {"admin": True, "viewer": False, "editor": False},
         }})
     def post(self, target_mode: str):  # pylint: disable=R0201
         """ Process """
+        if (error := _unknown_mode(target_mode)):
+            return error
         role_name = request.json["name"]
         auth.add_role(name=role_name, mode=target_mode)
         return {"ok": True}
@@ -83,9 +93,10 @@ class AdminAPI(api_tools.APIModeHandler):
         "recommended_roles": {
             "administration": {"admin": True, "viewer": False, "editor": False},
             "default": {"admin": True, "viewer": False, "editor": False},
-            "developer": {"admin": True, "viewer": False, "editor": False},
         }})
     def put(self, target_mode):
+        if (error := _unknown_mode(target_mode)):
+            return error
         name, new_name = request.json["name"], request.json["new_name"]
         auth.update_role_name(name, new_name, target_mode)
         return {"ok": True}
@@ -103,9 +114,10 @@ class AdminAPI(api_tools.APIModeHandler):
         "recommended_roles": {
             "administration": {"admin": True, "viewer": False, "editor": False},
             "default": {"admin": True, "viewer": False, "editor": False},
-            "developer": {"admin": True, "viewer": False, "editor": False},
         }})    
     def delete(self, target_mode: str):
+        if (error := _unknown_mode(target_mode)):
+            return error
         role_name = request.json["name"]
         auth.delete_role(role_name, target_mode)
         return {"ok": True}

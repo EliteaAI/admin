@@ -57,7 +57,6 @@ class AdminAPI(api_tools.APIModeHandler):
         "recommended_roles": {
             "administration": {"admin": True, "viewer": False, "editor": False},
             "default": {"admin": True, "viewer": False, "editor": False},
-            "developer": {"admin": True, "viewer": False, "editor": False},
         }})
     def get(self, target_mode):  # pylint: disable=R0201
         """ Process """
@@ -90,7 +89,6 @@ class AdminAPI(api_tools.APIModeHandler):
         "recommended_roles": {
             "administration": {"admin": True, "viewer": False, "editor": False},
             "default": {"admin": True, "viewer": False, "editor": False},
-            "developer": {"admin": True, "viewer": False, "editor": False},
         }})
     def put(self, target_mode):  # pylint: disable=R0201
         """ Process """
@@ -120,7 +118,6 @@ class AdminAPI(api_tools.APIModeHandler):
         "recommended_roles": {
             "administration": {"admin": True, "viewer": False, "editor": False},
             "default": {"admin": True, "viewer": False, "editor": False},
-            "developer": {"admin": True, "viewer": False, "editor": False},
         }})
     def post(self, target_mode):
         """ Sync standard permissions to existing shared projects """
@@ -182,7 +179,6 @@ class ProjectAPI(api_tools.APIModeHandler):
         "recommended_roles": {
             "administration": {"admin": True, "viewer": False, "editor": False},
             "default": {"admin": True, "viewer": False, "editor": False},
-            "developer": {"admin": True, "viewer": False, "editor": False},
         }})
     def get(self, project_id):  # pylint: disable=R0201
         """ Process """
@@ -212,7 +208,6 @@ class ProjectAPI(api_tools.APIModeHandler):
         "recommended_roles": {
             "administration": {"admin": True, "viewer": False, "editor": False},
             "default": {"admin": True, "viewer": False, "editor": False},
-            "developer": {"admin": True, "viewer": False, "editor": False},
         }})
     def put(self, project_id):  # pylint: disable=R0201
         """ Process """

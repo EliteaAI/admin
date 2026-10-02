@@ -50,7 +50,6 @@ class AdminAPI(api_tools.APIModeHandler):
         "recommended_roles": {
             "administration": {"admin": True, "viewer": False, "editor": False},
             "default": {"admin": True, "viewer": False, "editor": False},
-            "developer": {"admin": True, "viewer": False, "editor": False},
         }})
     def get(self):
         """List all moderation statuses with pagination"""
