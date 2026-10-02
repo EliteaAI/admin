@@ -267,10 +267,12 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0914,R0915
         #
         owner_user_id = None
         owner_project_id = None
+        source_project_id = None
         if isinstance(source_project, int) and source_project != project_id:
             current_user = auth.current_user()
             owner_user_id = current_user.get("id") if current_user else None
             owner_project_id = project_id
+            source_project_id = source_project
         #
         # The requested mode decides how the artifact is applied, so the detected
         # kind has to agree with it: an unexpected file is reported instead of
@@ -347,6 +349,7 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0914,R0915
                     denied_tables=SAFE_RESTORE_DENIED_TABLES if restrict_tables else (),
                     owner_user_id=owner_user_id,
                     owner_project_id=owner_project_id,
+                    source_project_id=source_project_id,
                 )
             else:
                 # psql runs --single-transaction and commits on EOF, so a frame

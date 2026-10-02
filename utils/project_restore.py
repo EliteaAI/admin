@@ -18,6 +18,7 @@
 """ Project restore: apply a backup produced by project_backup """
 
 import re
+import json
 
 import psycopg2  # pylint: disable=E0401
 
@@ -131,6 +132,16 @@ USER_OWNER_COLUMNS = ("author_id", "owner_id")
 PROJECT_OWNER_COLUMN = "owner_id"
 PROJECT_OWNED_TABLES = frozenset(("applications", "prompts", "skills"))
 
+# Project settings rather than content: a backup that carries rows for these
+# replaces the target's rows instead of merging. A merge would keep the target's
+# own rows (every project has a seeded 'Default' chat template, colliding on id
+# and on the unique name) and drop the backup's under ON CONFLICT DO NOTHING.
+REPLACED_ON_RESTORE_TABLES = frozenset(("chat_templates",))
+
+# table -> JSON column holding a list of objects whose 'project_id' key points
+# at the project owning the referenced entity (chat_templates.participants)
+PROJECT_REFERENCE_JSON_COLUMNS = {"chat_templates": "participants"}
+
 # Value used for a column the target requires but the backup does not carry
 # (added NOT NULL by a migration that gave it no database default). Types with
 # no unambiguous empty value are absent on purpose - inventing one there would
@@ -231,6 +242,51 @@ def owner_replacements(table, user_id=None, project_id=None):
             replacements[PROJECT_OWNER_COLUMN] = project_id
     #
     return replacements
+
+
+def remap_project_references(items, source_project_id, target_project_id):
+    """ Point list entries that reference the source project at the target one
+
+    Entries without a project_id (users) or referencing another project (the
+    public one) are kept as they are.
+    """
+    if not isinstance(items, list):
+        return items
+    #
+    result = []
+    for item in items:
+        if isinstance(item, dict) and item.get("project_id") == source_project_id:
+            item = dict(item, project_id=target_project_id)
+        result.append(item)
+    #
+    return result
+
+
+def _remap_project_reference_columns(cursor, tables, source_project_id, target_project_id):
+    """ Repoint project references inside JSON columns, return the rows changed """
+    changed = 0
+    #
+    for table, column in PROJECT_REFERENCE_JSON_COLUMNS.items():
+        if table not in tables:
+            continue
+        #
+        cursor.execute("SELECT id, {}::text FROM {}".format(_quote(column), _quote(table)))
+        for row_id, value in cursor.fetchall():
+            if value is None:
+                continue
+            #
+            items = json.loads(value)
+            remapped = remap_project_references(items, source_project_id, target_project_id)
+            if remapped == items:
+                continue
+            #
+            cursor.execute(
+                "UPDATE {} SET {} = %s::jsonb WHERE id = %s".format(_quote(table), _quote(column)),
+                (json.dumps(remapped), row_id),
+            )
+            changed += 1
+    #
+    return changed
 
 
 def _value_tuples(body):
@@ -785,6 +841,7 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
         raw_connection, open_chunks, schema,
         tables=None, include_parents=False, truncate=False, dry_run=False,
         denied_tables=(), owner_user_id=None, owner_project_id=None,
+        source_project_id=None,
 ):
     """ Apply a safe (INSERT-only) backup to a schema, return a summary """
     dbapi_connection = _dbapi_connection(raw_connection)
@@ -820,6 +877,8 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
         "dry_run": bool(dry_run),
         "truncated_tables": [],
         "truncate_cascade": False,
+        "replaced_tables": [],
+        "remapped_rows": 0,
         "applied_tables": [],
         "rows": {},
         "total_rows": 0,
@@ -841,6 +900,7 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
     #
     seen_tables = set()
     skipped_tables = set()
+    replaced_tables = set()
     #
     cursor = dbapi_connection.cursor()
     #
@@ -908,6 +968,13 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
                         _record_dropped(summary, schema, table, missing, dropped_values)
                     if filled:
                         _record_filled(summary, schema, table, filled)
+                #
+                # Emptied right before the first row of the backup lands, so a
+                # backup without rows for the table leaves the target's alone
+                if table in REPLACED_ON_RESTORE_TABLES and table not in replaced_tables \
+                        and table not in truncate_targets:
+                    cursor.execute("DELETE FROM {}".format(_quote(table)))
+                    replaced_tables.add(table)
             #
             if kind == STATEMENT_SETVAL:
                 # pg_get_serial_sequence() errors out on an unknown column
@@ -933,8 +1000,16 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
                 summary["rows"][table] = summary["rows"].get(table, 0) + cursor.rowcount
                 summary["total_rows"] += cursor.rowcount
         #
+        # Rows restored from another project still reference it inside JSON
+        if source_project_id is not None and owner_project_id is not None \
+                and source_project_id != owner_project_id:
+            summary["remapped_rows"] = _remap_project_reference_columns(
+                cursor, seen_tables, source_project_id, owner_project_id,
+            )
+        #
         summary["applied_tables"] = sorted(seen_tables)
         summary["skipped_tables"] = sorted(skipped_tables)
+        summary["replaced_tables"] = sorted(replaced_tables)
         #
         if dry_run:
             dbapi_connection.rollback()
