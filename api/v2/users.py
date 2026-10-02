@@ -63,7 +63,6 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
         "recommended_roles": {
             "administration": {"admin": True, "viewer": False, "editor": True},
             "default": {"admin": True, "viewer": True, "editor": True},
-            "developer": {"admin": True, "viewer": False, "editor": True},
         }})
     @api_tools.endpoint_metrics
     def get(self, project_id: int, **kwargs):
@@ -115,7 +114,6 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
         "recommended_roles": {
             "administration": {"admin": True, "viewer": False, "editor": False},
             "default": {"admin": True, "viewer": False, "editor": False},
-            "developer": {"admin": True, "viewer": False, "editor": False},
         }})
     @api_tools.endpoint_metrics
     def post(self, project_id: int, **kwargs):
@@ -156,7 +154,6 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
         "recommended_roles": {
             "administration": {"admin": True, "viewer": False, "editor": False},
             "default": {"admin": True, "viewer": False, "editor": False},
-            "developer": {"admin": True, "viewer": False, "editor": False},
         }})
     @api_tools.endpoint_metrics
     def put(self, project_id: int, **kwargs):
@@ -193,7 +190,6 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
         "recommended_roles": {
             "administration": {"admin": True, "viewer": False, "editor": False},
             "default": {"admin": True, "viewer": False, "editor": False},
-            "developer": {"admin": True, "viewer": False, "editor": False},
         }})
     @api_tools.endpoint_metrics
     def delete(self, project_id: int, **kwargs):
