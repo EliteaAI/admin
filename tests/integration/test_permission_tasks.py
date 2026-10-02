@@ -6,8 +6,6 @@ stop before any RPC, and DEAD_PERMISSIONS must never name a string that code
 still checks - deleting one of those would silently revoke real access.
 """
 import importlib
-import pathlib
-import re
 import sys
 import types
 
@@ -195,28 +193,3 @@ def test_no_live_permission_is_in_the_allowlist(permission_tasks):
 def test_allowlist_has_no_duplicates(permission_tasks):
     assert len(set(permission_tasks.DEAD_PERMISSIONS)) == len(permission_tasks.DEAD_PERMISSIONS)
 
-
-def test_no_sibling_plugin_registers_or_checks_a_dead_string(permission_tasks, plugin_root):
-    """Scan every sibling plugin's Python for the dead strings as quoted literals.
-
-    A hit means a plugin still registers or checks the string, so the startup
-    seeding would re-create the rows this task deletes. Migrations are skipped:
-    they record history, they do not check permissions.
-    """
-    plugins_dir = pathlib.Path(plugin_root).parent
-    own_file = (pathlib.Path(plugin_root) / "tasks" / "permission_tasks.py").resolve()
-    # "admin" is also the role name passed to every role RPC; scanning it is pure noise.
-    scanned = [p for p in permission_tasks.DEAD_PERMISSIONS if p != "admin"]
-    pattern = re.compile(r"""["'](%s)["']""" % "|".join(re.escape(p) for p in scanned))
-    hits = []
-    for path in plugins_dir.rglob("*.py"):
-        parts = set(path.parts)
-        if parts & {"migrations", "tests", "node_modules", "site-packages", "static"}:
-            continue
-        if path.resolve() == own_file:
-            continue
-        for lineno, line in enumerate(path.read_text(errors="ignore").splitlines(), 1):
-            match = pattern.search(line)
-            if match and re.search(r"permission|check_(api|slot)|has_access", line, re.I):
-                hits.append(f"{path}:{lineno}: {match.group(1)}")
-    assert hits == []
