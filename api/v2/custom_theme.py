@@ -315,14 +315,12 @@ class PromptLibAPI(api_tools.APIModeHandler):
             }
 
         # Return the static URL directly - it's served via /app/platform_logo/
-        # Include mode inside the palette only if palette has actual colors
-        # (a logo-only theme should return palette=None so UI falls back to base theme)
-        palette = theme_data.get("palette")
-        if palette:
-            palette = {
-                "mode": theme_data.get("mode", "dark"),
-                **palette,
-            }
+        # Always include mode inside the palette, even when no colors are customized,
+        # so UI knows which base theme (dark/light) to fall back to for uncustomized fields
+        palette = {
+            **(theme_data.get("palette") or {}),
+            "mode": theme_data.get("mode", "dark"),
+        }
         return {
             "palette": palette,
             "logo_url": theme_data.get("logo_url"),
