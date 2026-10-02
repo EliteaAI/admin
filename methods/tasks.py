@@ -32,6 +32,7 @@ from ..tasks import indexer_tasks
 from ..tasks import lifecycle_tasks
 from ..tasks import project_tasks
 from ..tasks import mesh_tasks
+from ..tasks import permission_tasks
 from ..tasks import role_migration
 from ..tasks import token_tasks
 
@@ -143,6 +144,11 @@ class Method:  # pylint: disable=E1101,R0903
             group="R-2.0.7",
         )
         self.register_admin_task("prune_system_tokens", token_tasks.prune_system_tokens)
+        self.register_admin_task(
+            "cleanup_dead_permissions",
+            permission_tasks.cleanup_dead_permissions,
+            group="R-2.0.8",
+        )
 
     @web.method()
     def register_admin_task(self, name, func, group=None):
