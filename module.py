@@ -53,7 +53,6 @@ class Module(module.ModuleModel):
             "recommended_roles": {
                 "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
                 "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
-                "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
             }
         })
         auth.register_permissions({
@@ -61,7 +60,6 @@ class Module(module.ModuleModel):
             "recommended_roles": {
                 "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
                 "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
-                "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
             }
         })
         auth.register_permissions({
@@ -69,7 +67,6 @@ class Module(module.ModuleModel):
             "recommended_roles": {
                 "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
                 "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
-                "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
             }
         })
         auth.register_permissions({
@@ -77,7 +74,6 @@ class Module(module.ModuleModel):
             "recommended_roles": {
                 "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
                 "default": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
-                "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
             }
         })
         auth.register_permissions({
@@ -85,7 +81,6 @@ class Module(module.ModuleModel):
             "recommended_roles": {
                 "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
                 "default": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
-                "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
             }
         })
         # Permissions seeded via direct auth.register_permissions() calls; register only strings code checks.
@@ -94,7 +89,6 @@ class Module(module.ModuleModel):
             "recommended_roles": {
                 "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
                 "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
-                "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
             }
         })
         # Administration scope covers every project on the platform, so backup and
@@ -108,7 +102,6 @@ class Module(module.ModuleModel):
                 "recommended_roles": {
                     "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
                     "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
-                    "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
                 }
             })
         auth.register_permissions({
@@ -116,7 +109,6 @@ class Module(module.ModuleModel):
             "recommended_roles": {
                 "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
                 "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
-                "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
             }
         })
         for _restore_permission in (
@@ -128,7 +120,6 @@ class Module(module.ModuleModel):
                 "recommended_roles": {
                     "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
                     "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
-                    "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
                 }
             })
         # Downloading a backup is a project-member action; viewers are excluded because
@@ -142,7 +133,6 @@ class Module(module.ModuleModel):
                 "recommended_roles": {
                     "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
                     "default": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
-                    "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
                 }
             })
         auth.register_permissions({
@@ -150,7 +140,6 @@ class Module(module.ModuleModel):
             "recommended_roles": {
                 "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
                 "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
-                "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
             }
         })
         auth.register_permissions({
@@ -158,7 +147,6 @@ class Module(module.ModuleModel):
             "recommended_roles": {
                 "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
                 "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
-                "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
             }
         })
         # Platform-wide eval dimension catalog (§16.1)
@@ -179,7 +167,6 @@ class Module(module.ModuleModel):
                 "recommended_roles": {
                     "administration": dict(_eval_roles),
                     "default": dict(_eval_roles),
-                    "developer": dict(_eval_roles),
                 }
             })
         auth.register_permissions({
@@ -187,7 +174,6 @@ class Module(module.ModuleModel):
             "recommended_roles": {
                 "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
                 "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
-                "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
             }
         })
         auth.register_permissions({
@@ -195,7 +181,6 @@ class Module(module.ModuleModel):
             "recommended_roles": {
                 "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
                 "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
-                "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
             }
         })
         auth.register_permissions({
@@ -203,7 +188,6 @@ class Module(module.ModuleModel):
             "recommended_roles": {
                 "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
                 "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
-                "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
             }
         })
         auth.register_permissions({
@@ -211,7 +195,6 @@ class Module(module.ModuleModel):
             "recommended_roles": {
                 "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
                 "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
-                "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
             }
         })
         auth.register_permissions({
@@ -219,7 +202,6 @@ class Module(module.ModuleModel):
             "recommended_roles": {
                 "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
                 "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
-                "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
             }
         })
         auth.register_permissions({
@@ -227,7 +209,6 @@ class Module(module.ModuleModel):
             "recommended_roles": {
                 "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
                 "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
-                "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
             }
         })
         auth.register_permissions({
@@ -235,7 +216,6 @@ class Module(module.ModuleModel):
             "recommended_roles": {
                 "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
                 "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
-                "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
             }
         })
         auth.register_permissions({
@@ -243,7 +223,6 @@ class Module(module.ModuleModel):
             "recommended_roles": {
                 "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
                 "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
-                "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
             }
         })
         # Init

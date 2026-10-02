@@ -219,7 +219,6 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         "recommended_roles": {
             "administration": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
             "default": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
-            "developer": {"super_admin": True, "admin": False, "viewer": False, "editor": False},
         }})
     def get(self, project_id: int, **kwargs):  # pylint: disable=R0911,R0914
         """ Process GET """
@@ -278,7 +277,6 @@ class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         "recommended_roles": {
             "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
             "default": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
-            "developer": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
         }})
     def get(self, project_id: int, **kwargs):
         """ Process GET """

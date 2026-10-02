@@ -41,7 +41,6 @@ class AdminAPI(api_tools.APIModeHandler):
         "recommended_roles": {
             "administration": {"admin": True, "viewer": False, "editor": True},
             "default": {"admin": True, "viewer": False, "editor": False},
-            "developer": {"admin": True, "viewer": False, "editor": False},
         }})
     def put(self):
         try:
@@ -123,7 +122,6 @@ class DefaultAPI(api_tools.APIModeHandler):
         "recommended_roles": {
             "administration": {"admin": True, "viewer": True, "editor": True},
             "default": {"admin": True, "viewer": True, "editor": True},
-            "developer": {"admin": True, "viewer": True, "editor": True},
         }})
     def get(self, project_id: int, entity_id: str):
         issue_type = flask.request.args.get("issue_type", None, type=str)
@@ -175,7 +173,6 @@ class DefaultAPI(api_tools.APIModeHandler):
         "recommended_roles": {
             "administration": {"admin": True, "viewer": True, "editor": True},
             "default": {"admin": True, "viewer": True, "editor": True},
-            "developer": {"admin": True, "viewer": True, "editor": True},
         }})
     def post(self, project_id: int, entity_id: str):
         try:
