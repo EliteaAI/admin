@@ -138,6 +138,12 @@ PROJECT_OWNED_TABLES = frozenset(("applications", "prompts", "skills"))
 # and on the unique name) and drop the backup's under ON CONFLICT DO NOTHING.
 REPLACED_ON_RESTORE_TABLES = frozenset(("chat_templates",))
 
+# table -> unique column its rows are matched on instead of the id. A backup tag
+# named like one the target already has (under another id) is merged into it, and
+# rows referencing the backup's id are repointed; under ON CONFLICT DO NOTHING
+# alone the tag is dropped and every association pointing at it fails its FK.
+MERGED_BY_KEY_TABLES = {"tags": "name"}
+
 # table -> JSON column holding a list of objects whose 'project_id' key points
 # at the project owning the referenced entity (chat_templates.participants)
 PROJECT_REFERENCE_JSON_COLUMNS = {"chat_templates": "participants"}
@@ -781,6 +787,138 @@ def foreign_key_parents(cursor, schema):
     return parents
 
 
+def referencing_columns(cursor, schema, table):
+    """ child table -> its column of a single-column foreign key onto `table` """
+    cursor.execute(
+        "select child.relname, att.attname"
+        " from pg_constraint con"
+        " join pg_class child on child.oid = con.conrelid"
+        " join pg_class parent on parent.oid = con.confrelid"
+        " join pg_namespace child_ns on child_ns.oid = child.relnamespace"
+        " join pg_namespace parent_ns on parent_ns.oid = parent.relnamespace"
+        " join pg_attribute att on att.attrelid = con.conrelid and att.attnum = con.conkey[1]"
+        " where con.contype = 'f' and array_length(con.conkey, 1) = 1"
+        " and child_ns.nspname = %s and parent_ns.nspname = %s and parent.relname = %s",
+        (schema, schema, table),
+    )
+    return {child: column for child, column in cursor.fetchall() if child != table}
+
+
+def _staging_name(table, suffix=""):
+    return "pg_temp.{}".format(_quote("restore_{}{}".format(table, suffix)))
+
+
+def _stage_insert(cursor, statement, table, staged):
+    """ Point an INSERT at the temp table collecting the rows of `table` """
+    if table not in staged:
+        staged[table] = _staging_name(table)
+        cursor.execute(
+            "CREATE TEMP TABLE {} (LIKE {} INCLUDING DEFAULTS) ON COMMIT DROP".format(
+                staged[table], _quote(table),
+            )
+        )
+    #
+    match = INSERT_RE.match(statement)
+    return "INSERT INTO {}{}".format(staged[table], statement[match.end():])
+
+
+def _merge_by_key(cursor, table, key, source, columns):
+    """ Move staged rows into `table` matching on `key`, return (map, merged, inserted)
+
+    A row whose key the target already has is not inserted, its id is mapped to
+    the target's row. The others keep their id when it is free and get one past
+    the highest in use when it is not.
+    """
+    mapping = _staging_name(table, "_map")
+    others = [name for name in columns if name != "id"]
+    quoted = {
+        "map": mapping, "source": source, "table": _quote(table), "key": _quote(key),
+        "columns": ", ".join(_quote(name) for name in columns),
+        "source_columns": ", ".join("s.{}".format(_quote(name)) for name in columns),
+        "others": ", ".join(_quote(name) for name in others),
+    }
+    #
+    cursor.execute(
+        "CREATE TEMP TABLE {map} (old_id bigint PRIMARY KEY, new_id bigint NOT NULL)"
+        " ON COMMIT DROP".format(**quoted)
+    )
+    cursor.execute(
+        "INSERT INTO {map} SELECT DISTINCT ON (s.id) s.id, t.id FROM {source} s"
+        " JOIN {table} t ON t.{key} = s.{key} ORDER BY s.id".format(**quoted)
+    )
+    merged = max(cursor.rowcount, 0)
+    #
+    cursor.execute(
+        "INSERT INTO {table} ({columns}) SELECT DISTINCT ON (s.id) {source_columns}"
+        " FROM {source} s WHERE NOT EXISTS (SELECT 1 FROM {map} m WHERE m.old_id = s.id)"
+        " AND NOT EXISTS (SELECT 1 FROM {table} t WHERE t.id = s.id)"
+        " ORDER BY s.id".format(**quoted)
+    )
+    inserted = max(cursor.rowcount, 0)
+    #
+    cursor.execute(
+        "WITH pending AS ("
+        " SELECT DISTINCT ON (s.id) s.* FROM {source} s"
+        " WHERE NOT EXISTS (SELECT 1 FROM {map} m WHERE m.old_id = s.id)"
+        " AND NOT EXISTS (SELECT 1 FROM {table} t WHERE t.{key} = s.{key})"
+        " ORDER BY s.id"
+        "), numbered AS ("
+        " SELECT p.*, (SELECT COALESCE(MAX(id), 0) FROM {table})"
+        " + row_number() OVER (ORDER BY p.id) AS restore_new_id FROM pending p"
+        "), moved AS ("
+        " INSERT INTO {table} (id, {others}) SELECT restore_new_id, {others} FROM numbered"
+        " RETURNING id, {key}"
+        ") INSERT INTO {map} SELECT n.id, i.id FROM numbered n"
+        " JOIN moved i ON i.{key} = n.{key}".format(**quoted)
+    )
+    inserted += max(cursor.rowcount, 0)
+    #
+    return mapping, merged, inserted
+
+
+def _flush_staged(cursor, staged, children, columns_by_table, summary):
+    """ Apply the staged rows: merged tables first, then the rows referencing them """
+    mappings = {}
+    #
+    for table, key in MERGED_BY_KEY_TABLES.items():
+        if table not in staged:
+            continue
+        #
+        mapping, merged, inserted = _merge_by_key(
+            cursor, table, key, staged[table], sorted(columns_by_table[table]),
+        )
+        mappings[table] = mapping
+        if merged:
+            summary["merged_rows"][table] = merged
+        if inserted:
+            summary["rows"][table] = summary["rows"].get(table, 0) + inserted
+            summary["total_rows"] += inserted
+    #
+    for child, (parent, column) in children.items():
+        if child not in staged:
+            continue
+        #
+        columns = sorted(columns_by_table[child])
+        select_list = ", ".join(
+            "COALESCE(m.new_id, s.{0})".format(_quote(name))
+            if name == column and parent in mappings else "s.{}".format(_quote(name))
+            for name in columns
+        )
+        join = " LEFT JOIN {} m ON m.old_id = s.{}".format(
+            mappings[parent], _quote(column),
+        ) if parent in mappings else ""
+        #
+        cursor.execute(
+            "INSERT INTO {} ({}) SELECT {} FROM {} s{} ON CONFLICT DO NOTHING".format(
+                _quote(child), ", ".join(_quote(name) for name in columns),
+                select_list, staged[child], join,
+            )
+        )
+        if cursor.rowcount and cursor.rowcount > 0:
+            summary["rows"][child] = summary["rows"].get(child, 0) + cursor.rowcount
+            summary["total_rows"] += cursor.rowcount
+
+
 def expand_with_parents(tables, parents):
     """ Add the FK ancestors of the requested tables """
     result = set(tables)
@@ -862,6 +1000,12 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
         columns_by_table = schema_columns(cursor, schema)
         required_by_table = required_columns(cursor, schema)
         #
+        children = {}
+        for parent in MERGED_BY_KEY_TABLES:
+            if parent in existing:
+                for child, column in referencing_columns(cursor, schema, parent).items():
+                    children[child] = (parent, column)
+        #
         if requested and include_parents:
             requested = expand_with_parents(requested, foreign_key_parents(cursor, schema))
             requested = requested.difference(denied)
@@ -879,6 +1023,7 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
         "truncate_cascade": False,
         "replaced_tables": [],
         "remapped_rows": 0,
+        "merged_rows": {},
         "applied_tables": [],
         "rows": {},
         "total_rows": 0,
@@ -901,6 +1046,12 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
     seen_tables = set()
     skipped_tables = set()
     replaced_tables = set()
+    #
+    # Rows of merged tables and of the tables referencing them are collected in
+    # temp tables and applied once the whole artifact has been read
+    staged_candidates = set(MERGED_BY_KEY_TABLES).intersection(existing).union(children)
+    staged = {}
+    deferred_setvals = []
     #
     cursor = dbapi_connection.cursor()
     #
@@ -985,6 +1136,12 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
             #
             seen_tables.add(table)
             #
+            if table in staged_candidates:
+                if kind == STATEMENT_SETVAL:
+                    deferred_setvals.append((table, statement))
+                    continue
+                statement = _stage_insert(cursor, statement, table, staged)
+            #
             try:
                 cursor.execute(statement)
             except psycopg2.Error as exc:
@@ -996,9 +1153,25 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
             #
             summary["statements"] += 1
             #
+            if table in staged:
+                continue
+            #
             if kind == STATEMENT_INSERT and cursor.rowcount and cursor.rowcount > 0:
                 summary["rows"][table] = summary["rows"].get(table, 0) + cursor.rowcount
                 summary["total_rows"] += cursor.rowcount
+        #
+        try:
+            _flush_staged(cursor, staged, children, columns_by_table, summary)
+            for table, statement in deferred_setvals:
+                cursor.execute(statement)
+                summary["statements"] += 1
+        except psycopg2.Error as exc:
+            raise ValueError(
+                "insert failed on {}: {}".format(
+                    ", ".join(sorted(staged)) or "?",
+                    str(getattr(exc, "pgerror", None) or exc).strip(),
+                )
+            ) from exc
         #
         # Rows restored from another project still reference it inside JSON
         if source_project_id is not None and owner_project_id is not None \
