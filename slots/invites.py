@@ -40,19 +40,6 @@ class Slot:  # pylint: disable=E1101,R0903
 
     """
 
-    @web.slot("admin_invites_platform_scripts")
-    @auth.decorators.check_slot(
-        ["invites.platform"],
-        access_denied_reply=None,
-    )
-    def _invites_platform_scripts(self, context, slot, payload):
-        _ = slot, payload
-        #
-        with context.app.app_context():
-            return self.descriptor.render_template(
-                "invites/platform_scripts.html",
-            )
-
     @web.slot("admin_invites_bulkusers_scripts")
     @auth.decorators.check_slot(
         ["invites.bulkusers"],
