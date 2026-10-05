@@ -148,6 +148,11 @@ MERGED_BY_KEY_TABLES = {"tags": "name"}
 # at the project owning the referenced entity (chat_templates.participants)
 PROJECT_REFERENCE_JSON_COLUMNS = {"chat_templates": "participants"}
 
+# entity_name of the list entries in those columns that reference a user. User
+# ids are global, so an entry restored for a user who is not a member of the
+# target project would still resolve and show up there
+USER_REFERENCE_ENTITY_NAMES = frozenset(("user",))
+
 # Value used for a column the target requires but the backup does not carry
 # (added NOT NULL by a migration that gave it no database default). Types with
 # no unambiguous empty value are absent on purpose - inventing one there would
@@ -268,8 +273,27 @@ def remap_project_references(items, source_project_id, target_project_id):
     return result
 
 
-def _remap_project_reference_columns(cursor, tables, source_project_id, target_project_id):
-    """ Repoint project references inside JSON columns, return the rows changed """
+def drop_non_member_users(items, member_user_ids):
+    """ Drop list entries that reference a user outside member_user_ids """
+    if not isinstance(items, list):
+        return items
+    #
+    members = {int(user_id) for user_id in member_user_ids}
+    return [
+        item for item in items
+        if not (
+            isinstance(item, dict)
+            and item.get("entity_name") in USER_REFERENCE_ENTITY_NAMES
+            and item.get("id") not in members
+        )
+    ]
+
+
+def _remap_project_reference_columns(
+        cursor, tables, source_project_id, target_project_id, member_user_ids=None,
+):
+    """ Repoint project references inside JSON columns and drop references to
+    users who are not members of the target, return the rows changed """
     changed = 0
     #
     for table, column in PROJECT_REFERENCE_JSON_COLUMNS.items():
@@ -282,7 +306,11 @@ def _remap_project_reference_columns(cursor, tables, source_project_id, target_p
                 continue
             #
             items = json.loads(value)
-            remapped = remap_project_references(items, source_project_id, target_project_id)
+            remapped = items
+            if source_project_id is not None:
+                remapped = remap_project_references(remapped, source_project_id, target_project_id)
+            if member_user_ids is not None:
+                remapped = drop_non_member_users(remapped, member_user_ids)
             if remapped == items:
                 continue
             #
@@ -979,9 +1007,13 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
         raw_connection, open_chunks, schema,
         tables=None, include_parents=False, truncate=False, dry_run=False,
         denied_tables=(), owner_user_id=None, owner_project_id=None,
-        source_project_id=None,
+        source_project_id=None, member_user_ids=None,
 ):
-    """ Apply a safe (INSERT-only) backup to a schema, return a summary """
+    """ Apply a safe (INSERT-only) backup to a schema, return a summary
+
+    member_user_ids, when given, are the users of the target project: user
+    references restored into JSON columns are kept only for them.
+    """
     dbapi_connection = _dbapi_connection(raw_connection)
     requested = {table.strip() for table in (tables or ()) if table.strip()}
     denied = frozenset(denied_tables)
@@ -1173,11 +1205,15 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
                 )
             ) from exc
         #
-        # Rows restored from another project still reference it inside JSON
-        if source_project_id is not None and owner_project_id is not None \
-                and source_project_id != owner_project_id:
+        # Rows restored from another project still reference it inside JSON,
+        # and may reference users who are not members of this one
+        cross_project = source_project_id is not None and owner_project_id is not None \
+            and source_project_id != owner_project_id
+        if cross_project or member_user_ids is not None:
             summary["remapped_rows"] = _remap_project_reference_columns(
-                cursor, seen_tables, source_project_id, owner_project_id,
+                cursor, seen_tables,
+                source_project_id if cross_project else None, owner_project_id,
+                member_user_ids,
             )
         #
         summary["applied_tables"] = sorted(seen_tables)

@@ -110,6 +110,15 @@ def _is_own_personal_project(project_id):
     return personal_project_id == project_id
 
 
+def _project_member_ids(project_id):
+    """ Users of the project, or None when they can not be resolved """
+    try:
+        return context.rpc_manager.timeout(5).admin_get_users_ids_in_project(project_id=project_id)
+    except Exception:  # pylint: disable=W0703
+        log.exception("project_restore: failed to resolve the users of project %s", project_id)
+        return None
+
+
 def _byte_chunks(spool):
     """ Re-readable byte stream over the uploaded file """
     def opener():
@@ -350,6 +359,7 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0914,R0915
                     owner_user_id=owner_user_id,
                     owner_project_id=owner_project_id,
                     source_project_id=source_project_id,
+                    member_user_ids=_project_member_ids(project_id),
                 )
             else:
                 # psql runs --single-transaction and commits on EOF, so a frame
