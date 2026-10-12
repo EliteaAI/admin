@@ -1,6 +1,6 @@
 {
   "name": "Admin UI Plugin",
-  "version": "0.107",
+  "version": "0.108",
   "depends_on": [
     "shared",
     "auth"
