@@ -17,6 +17,7 @@
 
 """ Utils — system user 'api' token rotation and pruning """
 
+import datetime
 import time
 
 from pylon.core.tools import log  # pylint: disable=E0611,E0401
@@ -25,6 +26,9 @@ from tools import auth, context, VaultClient  # pylint: disable=E0401
 
 ADMIN_SYSTEM_USER_EMAIL = "system@centry.user"
 ROTATED_TOKEN_NAME = "api"
+# How long a retired predecessor stays valid after rotation (config: rotation_grace_s).
+# Long enough for a reader that fetched it from Vault just before the swap to finish.
+DEFAULT_ROTATION_GRACE_S = 300
 
 
 def admin_user_id():
@@ -85,6 +89,65 @@ def rotatable_tokens(user_id):
     ]
 
 
+def rotation_grace_s():
+    """ Seconds a retired predecessor stays valid; admin config key rotation_grace_s """
+    try:
+        from tools import this  # pylint: disable=E0401,C0415
+        return int(this.descriptor.config.get("rotation_grace_s", DEFAULT_ROTATION_GRACE_S))
+    except (ImportError, AttributeError):
+        return DEFAULT_ROTATION_GRACE_S
+
+
+def _now():
+    return datetime.datetime.now()
+
+
+def _as_datetime(value):
+    """ expires as a datetime, or None if it is not one we can read """
+    if isinstance(value, datetime.datetime):
+        return value
+    try:
+        return datetime.datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def retired_tokens(user_id, include_in_grace=False):
+    """ 'api' tokens that rotation retired: expired, or still in grace if asked
+
+    Retirement is what gives a predecessor an expiry, so an 'api' token whose
+    expiry has passed (or falls within the grace window) is rotation's own
+    leftover; one expiring further out was set by someone else and is never
+    touched.
+    """
+    horizon = _now()
+    if include_in_grace:
+        horizon += datetime.timedelta(seconds=rotation_grace_s())
+    result = []
+    for item in auth.list_tokens(user_id, name=ROTATED_TOKEN_NAME):
+        expires = _as_datetime(item.get("expires"))
+        if expires is not None and expires <= horizon:
+            result.append(item)
+    return result
+
+
+def retire_tokens(token_ids):
+    """ Give predecessors an expiry of now + grace instead of leaving them permanent (#6489) """
+    expires = _now() + datetime.timedelta(seconds=rotation_grace_s())
+    retired = 0
+    for token_id in sorted(token_ids):
+        try:
+            auth.set_token_expiry(token_id, expires)
+            retired += 1
+        except Exception:  # pylint: disable=W0703
+            # The new token is already in Vault; a predecessor left permanent is the
+            # old behaviour, and the next rotation sees it again.
+            log.exception("Failed to retire predecessor token %s", token_id)
+    if retired:
+        log.info("Retired %s predecessor token(s), valid until %s", retired, expires.isoformat())
+    return retired
+
+
 def current_token_id(user_id):
     """ Id of the token predicts hand out: the newest rotatable one """
     return max((item["id"] for item in rotatable_tokens(user_id)), default=None)
@@ -123,7 +186,12 @@ def prune_tokens(tokens, keep_ids, dry_run, task_log=None):
 
 
 def rotate_user_token(user_id, vault_client, keep_previous=True):
-    """ Mint a new token into Vault, then revoke older ones (all of them unless keep_previous) """
+    """ Mint a new token into Vault, then retire the predecessors and revoke older ones
+
+    With keep_previous the Vault token and the newest row survive as predecessors,
+    but only for rotation_grace_s: they get an expiry instead of staying permanent.
+    Without it nothing survives, including predecessors still inside their grace.
+    """
     snapshot = rotatable_tokens(user_id)
     secrets = vault_client.get_secrets()
     # Vault readers and current_token_id() callers may each hold a different one in flight
@@ -134,8 +202,13 @@ def rotate_user_token(user_id, vault_client, keep_previous=True):
     token_id = auth.add_token(user_id, ROTATED_TOKEN_NAME)
     secrets["auth_token"] = auth.encode_token(token_id)
     vault_client.set_secrets(secrets)
-    # Only pre-existing rows are pruned, so concurrently minted tokens survive
-    return prune_tokens(snapshot, keep_ids, dry_run=False)
+    # Only after Vault holds the new token: from here a predecessor may expire
+    retire_tokens({item["id"] for item in snapshot if item["id"] in keep_ids})
+    # Predecessors retired by earlier rotations are dead weight once expired (all of
+    # them on a hard cut); only pre-existing rows are pruned, so concurrently minted
+    # tokens survive
+    leftovers = retired_tokens(user_id, include_in_grace=not keep_previous)
+    return prune_tokens(snapshot + leftovers, keep_ids, dry_run=False)
 
 
 def rotate_admin_token(keep_previous=True):
