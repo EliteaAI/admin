@@ -25,6 +25,8 @@ import psycopg2  # pylint: disable=E0401
 from pylon.core.tools import log  # pylint: disable=E0611,E0401
 
 from .project_backup import SAFE_MODE_EXCLUDED_TABLES
+from .chat_backup import CHAT_BACKUP_TABLES, CHATS_NONE, CHAT_OPTIONS
+from . import chat_restore
 
 
 KIND_SAFE = "safe"
@@ -506,14 +508,19 @@ def parse_header(head):
             continue
         #
         key, value = match.group(1), match.group(2)
-        if key in ("project_id", "project_name", "schema", "mode", "generated_at"):
+        if key in ("project_id", "project_name", "schema", "mode", "generated_at",
+                   "chats_included", "chats_count", "attachments_count"):
             result.setdefault(key, value)
     #
-    if "project_id" in result:
-        try:
-            result["project_id"] = int(result["project_id"])
-        except (TypeError, ValueError):
-            pass
+    for key in ("project_id", "chats_count", "attachments_count"):
+        if key in result:
+            try:
+                result[key] = int(result[key])
+            except (TypeError, ValueError):
+                pass
+    #
+    if result.get("chats_included") not in CHAT_OPTIONS:
+        result["chats_included"] = CHATS_NONE
     #
     return result
 
@@ -1008,15 +1015,30 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
         tables=None, include_parents=False, truncate=False, dry_run=False,
         denied_tables=(), owner_user_id=None, owner_project_id=None,
         source_project_id=None, member_user_ids=None,
+        backup_chats=CHATS_NONE, restore_chats=CHATS_NONE, chat_context=None,
+        attachment_handler=None,
 ):
     """ Apply a safe (INSERT-only) backup to a schema, return a summary
 
     member_user_ids, when given, are the users of the target project: user
     references restored into JSON columns are kept only for them.
+
+    backup_chats is what the artifact declares it carries, restore_chats what
+    the user asked for. Chats of a backup that carries them are skipped when
+    not requested; otherwise the chat tables stay denied like before.
+    attachment_handler(cursor, attachments, dry_run) uploads or re-links the
+    files of the restored attachment messages and returns a summary.
     """
     dbapi_connection = _dbapi_connection(raw_connection)
     requested = {table.strip() for table in (tables or ()) if table.strip()}
     denied = frozenset(denied_tables)
+    #
+    chat_tables_skipped = frozenset()
+    with_chats = backup_chats != CHATS_NONE and restore_chats != CHATS_NONE
+    if backup_chats != CHATS_NONE:
+        denied = denied.difference(CHAT_BACKUP_TABLES)
+        if not with_chats:
+            chat_tables_skipped = CHAT_BACKUP_TABLES
     #
     blocked = sorted(requested.intersection(denied))
     if blocked:
@@ -1069,10 +1091,16 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
     truncate_targets = []
     if truncate:
         if requested:
-            truncate_targets = sorted(requested)
+            truncate_targets = sorted(requested.difference(chat_tables_skipped))
         else:
             truncate_targets = sorted(
                 scan_backup_tables(open_chunks).intersection(existing).difference(denied)
+                .difference(chat_tables_skipped)
+            )
+        # Replacing chats empties every chat table, not only those the backup has rows for
+        if with_chats:
+            truncate_targets = sorted(
+                set(truncate_targets).union(CHAT_BACKUP_TABLES.intersection(existing))
             )
     #
     seen_tables = set()
@@ -1082,6 +1110,8 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
     # Rows of merged tables and of the tables referencing them are collected in
     # temp tables and applied once the whole artifact has been read
     staged_candidates = set(MERGED_BY_KEY_TABLES).intersection(existing).union(children)
+    if with_chats:
+        staged_candidates.update(CHAT_BACKUP_TABLES.intersection(existing))
     staged = {}
     deferred_setvals = []
     #
@@ -1117,7 +1147,7 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
                     "table not allowed in safe restore: {}".format(table)
                 )
             #
-            if table is None or table not in existing:
+            if table is None or table not in existing or table in chat_tables_skipped:
                 skipped_tables.add(table or "?")
                 continue
             #
@@ -1132,7 +1162,9 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
             if kind == STATEMENT_INSERT:
                 names = insert_column_names(statement) or ()
                 missing = [name for name in names if name not in known_columns]
-                replacements = owner_replacements(table, owner_user_id, owner_project_id)
+                # Chat authors are re-mapped by membership in chat_restore instead
+                replacements = {} if table in CHAT_BACKUP_TABLES else \
+                    owner_replacements(table, owner_user_id, owner_project_id)
                 # The other direction of the same drift: a column the target
                 # requires but this backup has no value for gets an empty one
                 required = required_by_table.get(table, {})
@@ -1194,6 +1226,14 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
         #
         try:
             _flush_staged(cursor, staged, children, columns_by_table, summary)
+            if with_chats:
+                context = dict(chat_context or {}, member_user_ids=member_user_ids)
+                summary["chats"], attachments = chat_restore.merge_chats(
+                    cursor, staged, columns_by_table, existing, context,
+                )
+                summary["chats"]["included"] = restore_chats
+                if attachment_handler is not None:
+                    summary["attachments"] = attachment_handler(cursor, attachments, dry_run)
             for table, statement in deferred_setvals:
                 cursor.execute(statement)
                 summary["statements"] += 1
@@ -1226,6 +1266,9 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
             dbapi_connection.commit()
     except Exception:
         dbapi_connection.rollback()
+        # Files uploaded for messages that were never committed
+        if hasattr(attachment_handler, "cleanup"):
+            attachment_handler.cleanup()
         raise
     finally:
         cursor.close()
