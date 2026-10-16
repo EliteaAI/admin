@@ -379,7 +379,7 @@ def _literal(mogrify_cursor, value):
 
 def _iter_table_sql(  # pylint: disable=R0913,R0914
         dbapi_connection, mogrify_cursor, schema, table, columns, redactor,
-        chunk_size=DEFAULT_CHUNK_SIZE, order_by=(),
+        chunk_size=DEFAULT_CHUNK_SIZE, order_by=(), row_filter=None,
 ):
     """ Yield INSERT statements for a single table """
     column_names = [name for name, _ in columns]
@@ -409,6 +409,8 @@ def _iter_table_sql(  # pylint: disable=R0913,R0914
     # already existing row, which therefore has a lower value.
     #
     query = "select {} from {}.{}".format(select_list, _quote(schema), _quote(table))
+    if row_filter:
+        query += " where {}".format(row_filter)
     if order_by:
         query += " order by {}".format(
             ", ".join("{} asc".format(_quote(name)) for name in order_by)
@@ -450,13 +452,22 @@ def _make_insert(table, column_list, buffer):
 def iter_project_backup_sql(  # pylint: disable=R0913,R0914,R0915
         raw_connection, project_id, schema, project_name=None,
         safe_mode=True, extra_excluded_tables=(), chunk_size=DEFAULT_CHUNK_SIZE,
+        included_tables=(), row_filters=None, header_extra=None,
 ):
-    """ Yield the project backup as a stream of SQL text chunks """
+    """ Yield the project backup as a stream of SQL text chunks
+
+    included_tables are exported although the safe mode skips them (the chat
+    tables of a backup with chats); row_filters limits a table to the rows
+    matching its WHERE clause; header_extra adds '-- key: value' header lines.
+    """
+    row_filters = row_filters or {}
     dbapi_connection = _dbapi_connection(raw_connection)
     #
     excluded = {}
     if safe_mode:
         excluded.update(SAFE_MODE_EXCLUDED_TABLES)
+        for table in included_tables:
+            excluded.pop(table, None)
     for table in extra_excluded_tables:
         table = table.strip()
         if table:
@@ -481,6 +492,7 @@ def iter_project_backup_sql(  # pylint: disable=R0913,R0914,R0915
     #
     yield _header(
         project_id, project_name, schema, generated_at, safe_mode, tables, skipped, excluded,
+        header_extra,
     )
     #
     counts = {}
@@ -498,7 +510,7 @@ def iter_project_backup_sql(  # pylint: disable=R0913,R0914,R0915
             for item in _iter_table_sql(
                     dbapi_connection, mogrify_cursor, schema, table,
                     table_columns, redactor, chunk_size,
-                    self_references.get(table, ()),
+                    self_references.get(table, ()), row_filters.get(table),
             ):
                 if isinstance(item, int):
                     counts[table] = item
@@ -521,6 +533,7 @@ def iter_project_backup_sql(  # pylint: disable=R0913,R0914,R0915
 
 def _header(  # pylint: disable=R0913
         project_id, project_name, schema, generated_at, safe_mode, tables, skipped, excluded,
+        header_extra=None,
 ):
     lines = [
         "--",
@@ -531,8 +544,10 @@ def _header(  # pylint: disable=R0913
         "-- schema:       {}".format(schema),
         "-- mode:         {}".format("safe" if safe_mode else "full"),
         "-- generated_at: {}".format(generated_at),
-        "--",
     ]
+    for key, value in (header_extra or {}).items():
+        lines.append("-- {}: {}".format(key, value))
+    lines.append("--")
     #
     if safe_mode:
         lines += [
