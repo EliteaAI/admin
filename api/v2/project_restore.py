@@ -30,6 +30,8 @@ from tools import context  # pylint: disable=E0401
 from tools import constants as c  # pylint: disable=E0401
 
 from ...utils import backup_crypto
+from ...utils import chat_backup
+from ...utils.chat_restore import AttachmentRestorer, iter_zip_sql, open_backup_zip
 from ...utils.project_restore import (
     KIND_SAFE, KIND_PG_DUMP, HEADER_SCAN_BYTES, SAFE_RESTORE_DENIED_TABLES,
     detect_artifact_kind, parse_header, pg_dump_schema, restore_safe_backup,
@@ -50,6 +52,8 @@ TRUE_VALUES = ("1", "true", "yes", "on")
 
 SAFE_MODES = ("safe", "sanitized", "default")
 FULL_MODES = ("full", "raw", "as_is")
+
+DEFAULT_MAX_ARCHIVE_MB = 4096
 
 
 def _flag(name, default=False):
@@ -147,6 +151,54 @@ def _text_chunks(open_bytes):
     return opener
 
 
+def _spool_decrypted(open_bytes):
+    """ Decrypted copy of the artifact in a temp file: a ZIP needs random access """
+    target = tempfile.TemporaryFile()  # pylint: disable=R1732
+    for chunk in open_bytes():
+        target.write(chunk)
+    target.seek(0)
+    return target
+
+
+def _max_archive_bytes(handler):
+    module = getattr(handler, "module", None)
+    config = getattr(getattr(module, "descriptor", None), "config", None) or {}
+    try:
+        megabytes = int(config.get("backup_max_archive_mb", DEFAULT_MAX_ARCHIVE_MB))
+    except (TypeError, ValueError):
+        megabytes = DEFAULT_MAX_ARCHIVE_MB
+    return megabytes * 1024 * 1024
+
+
+def _requested_restore_chats():
+    value = _param("restore_chats").strip().lower() or chat_backup.CHATS_NONE
+    return value if value in chat_backup.CHAT_OPTIONS else None
+
+
+def _attachment_settings(project_id):
+    """ (bucket, retention days) chat attachments of the project are stored with """
+    try:
+        from tools import VaultClient  # pylint: disable=E0401,C0415
+        secrets = VaultClient(project_id).get_all_secrets()
+        return (
+            secrets.get("default_attachment_bucket") or "attachments",
+            int(secrets.get("chat_bucket_retention_days", 365)),
+        )
+    except Exception:  # pylint: disable=W0703
+        return "attachments", 365
+
+
+def _attachment_restorer(project_id, archive, manifest, restore_chats):
+    from tools import MinioClient  # pylint: disable=E0401,C0415
+    bucket, retention_days = _attachment_settings(project_id)
+    return AttachmentRestorer(
+        MinioClient.from_project_id(project_id), bucket,
+        archive=archive, manifest=manifest,
+        with_files=restore_chats == chat_backup.CHATS_WITH_ATTACHMENTS,
+        retention_days=retention_days,
+    )
+
+
 def _verify_stream(open_bytes):
     """ Walk the whole artifact so a failure raises before anything is applied """
     for _ in open_bytes():
@@ -165,9 +217,9 @@ def _read_head(open_bytes, limit):
     return bytes(head[:limit])
 
 
-def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0914,R0915
+def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0913,R0914,R0915
         project_id, allow_pg_dump=True, allow_mismatch_override=True, restrict_tables=False,
-        policy=backup_crypto.POLICY_ENABLED,
+        policy=backup_crypto.POLICY_ENABLED, max_archive_bytes=DEFAULT_MAX_ARCHIVE_MB * 1024 * 1024,
 ):
     """ Apply the uploaded artifact to the project schema """
     if not _is_same_site_request():
@@ -199,12 +251,18 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0914,R0915
     include_parents = _flag("include_parents")
     truncate = _flag("truncate")
     dry_run = _flag("dry_run")
+    inspect_only = _flag("inspect")
     allow_mismatch = _flag("allow_project_mismatch") if allow_mismatch_override else False
+    restore_chats = _requested_restore_chats()
+    if restore_chats is None:
+        return {"ok": False, "error": "unknown restore_chats option"}, 400
     #
     from tools import project_constants as pc  # pylint: disable=E0401,C0415
     schema = pc["PROJECT_SCHEMA_TEMPLATE"].format(project_id)
     #
     spool = tempfile.TemporaryFile()  # pylint: disable=R1732
+    archive_spool = None
+    archive = None
     #
     try:
         source = flask.request.files["file"]
@@ -246,17 +304,40 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0914,R0915
                          "export the project again and upload the .sql.enc file",
             }, 400
         #
-        head = _read_head(open_bytes, HEADER_SCAN_BYTES).decode("utf-8", "replace")
+        raw_head = _read_head(open_bytes, HEADER_SCAN_BYTES)
+        manifest = None
+        #
+        # A backup with chat attachments is a ZIP: the SQL part inside it is
+        # what gets applied, the files are uploaded next to it
+        if chat_backup.is_zip(raw_head):
+            if chat_backup.read_zip_info(raw_head) is None:
+                return {"ok": False, "error": "unrecognized backup file"}, 400
+            archive_spool = _spool_decrypted(open_bytes) if encrypted else spool
+            archive_spool.seek(0)
+            archive, _, manifest = open_backup_zip(archive_spool, max_archive_bytes)
+            open_bytes = iter_zip_sql(archive)
+            raw_head = _read_head(open_bytes, HEADER_SCAN_BYTES)
+        #
+        head = raw_head.decode("utf-8", "replace")
         #
         kind = detect_artifact_kind(head)
         if kind is None:
             return {"ok": False, "error": "unrecognized backup file"}, 400
         #
         artifact = parse_header(head)
+        artifact["has_attachment_files"] = archive is not None
+        artifact["attachments_size"] = sum(
+            item.get("size") or 0 for item in (manifest or {}).get("attachments") or []
+            if item.get("status") == chat_backup.ATTACHMENT_OK
+        )
         artifact["kind"] = kind
         artifact["filename"] = filename
         artifact["size"] = size
         artifact["encrypted"] = encrypted
+        #
+        # The dialog reads what a file carries as soon as it is picked
+        if inspect_only:
+            return {"ok": True, "inspect": True, "artifact": artifact}, 200
         #
         source_project = artifact.get("project_id")
         if isinstance(source_project, int) and source_project != project_id \
@@ -346,7 +427,16 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0914,R0915
                 kind, schema, "partial" if tables else "full", dry_run,
             )
             #
+            # Without the files in the backup, attachments can only be re-linked
+            if restore_chats == chat_backup.CHATS_WITH_ATTACHMENTS and archive is None:
+                restore_chats = chat_backup.CHATS_WITHOUT_ATTACHMENTS
+            #
             if kind == KIND_SAFE:
+                handler = None
+                if artifact["chats_included"] != chat_backup.CHATS_NONE \
+                        and restore_chats != chat_backup.CHATS_NONE:
+                    handler = _attachment_restorer(project_id, archive, manifest, restore_chats)
+                current_user = auth.current_user()
                 result = restore_safe_backup(
                     connection,
                     open_chunks=_text_chunks(open_bytes),
@@ -360,6 +450,24 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0914,R0915
                     owner_project_id=owner_project_id,
                     source_project_id=source_project_id,
                     member_user_ids=_project_member_ids(project_id),
+                    backup_chats=artifact["chats_included"],
+                    restore_chats=restore_chats,
+                    chat_context={
+                        "restorer_id": current_user.get("id") if current_user else None,
+                        "source_project_id": artifact.get("project_id")
+                        if isinstance(artifact.get("project_id"), int) else None,
+                        "target_project_id": project_id,
+                    },
+                    attachment_handler=handler,
+                )
+                log.info(
+                    "project_restore_applied: project %s (dry_run=%s, chats_included=%s,"
+                    " restore_chats=%s, chats=%s, attachments=%s)",
+                    project_id, dry_run, artifact["chats_included"], restore_chats,
+                    result.get("chats"), {
+                        k: v for k, v in (result.get("attachments") or {}).items()
+                        if k != "failed_names"
+                    },
                 )
             else:
                 # psql runs --single-transaction and commits on EOF, so a frame
@@ -391,6 +499,10 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0914,R0915
         log.exception("project_restore: failed for %s", schema)
         return {"ok": False, "error": "restore failed", "detail": str(exc)}, 500
     finally:
+        if archive is not None:
+            archive.close()
+        if archive_spool is not None and archive_spool is not spool:
+            archive_spool.close()
         spool.close()
     #
     result["mode"] = "partial" if tables else "full"
@@ -445,6 +557,7 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         #
         return apply_uploaded_backup(
             project_id, policy=backup_crypto.handler_policy(self),
+            max_archive_bytes=_max_archive_bytes(self),
         )
 
 
@@ -477,6 +590,14 @@ class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
              "description": "Execute inside a transaction and roll it back."},
             {"name": "allow_project_mismatch", "in": "query", "schema": {"type": "boolean"},
              "description": "Required when the artifact was taken from another project."},
+            {"name": "inspect", "in": "query", "schema": {"type": "boolean"},
+             "description": "Only read the artifact header and return what it carries."},
+            {"name": "restore_chats", "in": "query",
+             "schema": {"type": "string", "enum": list(chat_backup.CHAT_OPTIONS), "default": "none"},
+             "description": "Restore the chats of a backup that carries them: "
+                            "without_attachments keeps attachment messages whose file the "
+                            "project still has, with_attachments uploads the files of a ZIP "
+                            "backup. Chats with a uuid the project already has are skipped."},
         ],
     )
     @auth.decorators.check_api({
@@ -509,6 +630,7 @@ class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         return apply_uploaded_backup(
             project_id, allow_pg_dump=False, allow_mismatch_override=True,
             restrict_tables=True, policy=backup_crypto.handler_policy(self),
+            max_archive_bytes=_max_archive_bytes(self),
         )
 
 
