@@ -88,7 +88,7 @@ SECTION_DEFINITIONS = {
         "title": "Banner",
         "order": 89,
         "icon": "campaign",
-        "description": "Enable dedicated banner to communicate important notifications across the platform.",
+        "description": "Configure one or more banners to communicate important notifications across the platform.",
         "always_visible": True,
     },
     "support_assistant": {
