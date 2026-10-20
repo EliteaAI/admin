@@ -159,3 +159,29 @@ def test_an_unusable_stored_value_never_silences_a_save():
     assert config_validation.stored_value_is_unusable(BOOL_FIELD_SCHEMA, 0)
     assert config_validation.stored_value_is_unusable(CRON_FIELD_SCHEMA, "9 *")
     assert not config_validation.stored_value_is_unusable(CRON_FIELD_SCHEMA, "* * * * *")
+
+
+REGEX_LIST_FIELD_SCHEMA = {
+    "type": "array",
+    "format": "regex_list",
+    "value_schema": {"type": "array", "items": {"type": "string", "minLength": 1}},
+}
+
+
+def test_regex_list_accepts_valid_patterns():
+    assert config_validation.validate_config_value(
+        REGEX_LIST_FIELD_SCHEMA, [r"^ghp_TEST", r"AKIA[0-9]{4}"],
+    ) == []
+
+
+def test_regex_list_rejects_invalid_pattern_by_index_without_echoing_it():
+    errors = config_validation.validate_config_value(
+        REGEX_LIST_FIELD_SCHEMA, [r"ok", r"(unclosed", r"[z-a]"],
+    )
+
+    assert [e["message"] for e in errors] == ["[1]: invalid regex", "[2]: invalid regex"]
+    assert all("unclosed" not in e["message"] and "z-a" not in e["message"] for e in errors)
+
+
+def test_regex_list_check_applies_only_to_opted_in_fields():
+    assert config_validation.validate_config_value({"type": "array"}, ["(unclosed"]) == []

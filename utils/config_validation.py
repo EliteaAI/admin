@@ -1,5 +1,7 @@
 """Validation helpers for schema-driven administration settings."""
 
+import re
+
 from croniter import croniter
 from jsonschema import Draft202012Validator
 
@@ -39,6 +41,19 @@ def _cron_errors(field_schema, value):
     if isinstance(value, str) and croniter.is_valid(value):
         return []
     return [{"path": "", "message": "must be a valid cron expression"}]
+
+
+def _regex_list_errors(field_schema, value):
+    """Reject list entries the consumer would fail to compile; names the index, never the text."""
+    if field_schema.get("format") != "regex_list" or not isinstance(value, list):
+        return []
+    errors = []
+    for index, pattern in enumerate(value):
+        try:
+            re.compile(pattern)
+        except (re.error, TypeError):
+            errors.append({"path": str(index), "message": f"[{index}]: invalid regex"})
+    return errors
 
 
 def _boolean_errors(field_schema, value):
@@ -81,7 +96,7 @@ def validate_config_value(field_schema, value, *, max_errors=10):
     alongside type information. ``value_schema`` keeps validation explicit and
     prevents existing fields from acquiring stricter behavior accidentally.
     """
-    errors = _cron_errors(field_schema, value)
+    errors = _cron_errors(field_schema, value) + _regex_list_errors(field_schema, value)
 
     value_schema = field_schema.get("value_schema")
     if not value_schema:
