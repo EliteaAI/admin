@@ -32,6 +32,30 @@ from ...models.pd.user_input_field import UserInputFieldPD
 from ...utils import validate_role_assignment, get_role_validation_error
 
 
+LIMIT_ERROR = "limit must be a whole number from 1 to 100"
+OFFSET_ERROR = "offset must be a whole number, 0 or more"
+
+
+def _parse_page_args(args):
+    """Return (limit, offset, error); limit is None when the request has no limit (R1.4)."""
+    raw_limit = args.get("limit")
+    if raw_limit is None:
+        return None, 0, None
+    try:
+        limit = int(raw_limit)
+    except ValueError:
+        return None, 0, LIMIT_ERROR
+    if not 1 <= limit <= 100:
+        return None, 0, LIMIT_ERROR
+    try:
+        offset = int(args.get("offset", 0))
+    except ValueError:
+        return None, 0, OFFSET_ERROR
+    if offset < 0:
+        return None, 0, OFFSET_ERROR
+    return limit, offset, None
+
+
 class AdminAPI(api_tools.APIModeHandler):
     pass
 
@@ -66,6 +90,9 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
         }})
     @api_tools.endpoint_metrics
     def get(self, project_id: int, **kwargs):
+        limit, offset, error = _parse_page_args(request.args)
+        if error:
+            return {"msg": error}, 400
         project_users = self.module.get_users_roles_in_project(project_id, filter_system_user=True)
         user_ids = set(project_users.keys())
         all_users = auth.list_users(user_ids=user_ids)
@@ -85,16 +112,7 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
             avatar = avatar_map.pop(user['id'], None)
             user['avatar'] = avatar
 
-        result = all_users
-        # #
-        # limit = request.args.get("limit", None)
-        # offset = request.args.get("offset", None)
-        # #
-        # if limit is not None and offset is not None:
-        #     limit = int(limit)
-        #     offset = int(offset)
-        #     #
-        #     result = all_users[offset:offset+limit]
+        result = all_users if limit is None else all_users[offset:offset + limit]
 
         return {
             "total": len(all_users),
