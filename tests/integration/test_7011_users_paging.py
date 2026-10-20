@@ -140,7 +140,7 @@ def ids(result):
 
 
 def ordered_ids(users):
-    return [u["id"] for u in sorted(users, key=lambda u: (u["name"], u["id"]))]
+    return [u["id"] for u in sorted(users, key=lambda u: (u["name"].casefold(), u["id"]))]
 
 
 @pytest.mark.parametrize(
@@ -167,6 +167,16 @@ def test_el7011_r1_1_avatars_load_for_page_ids_only(env):
     assert env.social_calls == [set(ids(result))]
     assert len(env.social_calls[0]) == 20
     assert all(row["avatar"] == f"a{row['id']}" for row in result[0]["rows"])
+
+
+def test_el7011_r1_1_order_ignores_name_case(make_env):
+    users = default_users()
+    users[0]["name"] = "alice"
+    users[1]["name"] = "Bob"
+    users[2]["name"] = "Carl"
+    env = make_env(users)
+
+    assert ids(env.get(limit=100, offset=0))[:3] == [1, 2, 3]
 
 
 def test_el7011_r1_1_same_name_keeps_stable_order_across_pages(make_env):
@@ -199,7 +209,7 @@ def test_el7011_r2_2_query_without_match_returns_200_and_empty_list(env):
     assert env.get(limit=20, offset=0, query="zzzz-no-user") == ({"total": 0, "rows": []}, 200)
 
 
-@pytest.mark.parametrize("query", ["", "%20%20", "  "])
+@pytest.mark.parametrize("query", ["", "   ", "\t"])
 def test_el7011_r2_1_blank_query_is_no_search(env, query):
     assert env.get(limit=20, offset=0, query=query) == env.get(limit=20, offset=0)
     body, _ = env.get(limit=20, offset=0, query=query)
@@ -227,13 +237,13 @@ def test_el7011_r1_3_limit_bounds_are_accepted(env, limit, count):
     assert len(body["rows"]) == count
 
 
-@pytest.mark.parametrize("limit", ["0", "101", "abc", "1.5", "-5"])
+@pytest.mark.parametrize("limit", ["0", "101", "abc", "1.5", "-5", " 5", "+5", "1_0", "\u0665"])
 def test_el7011_r1_3_bad_limit_returns_400_naming_limit(env, limit):
     assert env.get(limit=limit, offset=0) == (
         {"msg": "limit must be a whole number from 1 to 100"}, 400)
 
 
-@pytest.mark.parametrize("offset", ["-1", "x", "2.5"])
+@pytest.mark.parametrize("offset", ["-1", "x", "2.5", " 5", "+5", "1_0", "\u0665"])
 def test_el7011_r1_3_bad_offset_returns_400_naming_offset(env, offset):
     assert env.get(limit=20, offset=offset) == (
         {"msg": "offset must be a whole number, 0 or more"}, 400)
