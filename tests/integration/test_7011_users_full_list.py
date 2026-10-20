@@ -1,20 +1,28 @@
 """Full list users endpoint returns all project members when limit is not set (EL-7011).
 
 Tests for:
-- TC-US04-10: No limit returns every project user with today's fields
-- TC-US04-11: An offset without a limit is ignored
-- TC-US04-12: The full list still returns when the avatar service is down
+- TC-US04-10 (R1.4, R2.3): No limit returns every project user with today's fields
+- TC-US04-11 (R1.4): An offset without a limit is ignored
+- TC-US04-12 (R1.4): The full list still returns when the avatar service is down
 """
+import datetime
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))  # importlib import mode adds no sibling path
 
-from test_7011_users_paging import env, make_env  # noqa: E402,F401  (shared stubs and fixtures)
+from test_7011_users_paging import (  # noqa: E402,F401  (shared stubs and fixtures)
+    OUTSIDER_ID,
+    SYSTEM_USER_ID,
+    default_users,
+    env,
+    ids,
+    make_env,
+)
 
 
 def test_no_limit_returns_all_project_users(env):
-    """TC-US04-10: No limit returns every project user with today's fields.
+    """TC-US04-10 (R1.4, R2.3): No limit returns every project user with today's fields.
 
     When the request has no limit parameter, the endpoint returns all project members
     (45 users) with the same fields as before: id, name, email, roles, last_login, avatar.
@@ -34,8 +42,24 @@ def test_no_limit_returns_all_project_users(env):
         assert "avatar" in row
 
 
+def test_full_list_excludes_system_user_and_outsider_and_keeps_last_login(make_env):
+    """R2.3, R1.4: The full list has no system user and no outsider; last_login stays ISO text."""
+    members = default_users()
+    members[0]["last_login"] = datetime.datetime(2026, 10, 1, 12, 30, 45, 999)
+    env = make_env(members)
+
+    result, status = env.get()
+
+    assert status == 200
+    assert {SYSTEM_USER_ID, OUTSIDER_ID}.isdisjoint(ids((result, status)))
+    assert set(ids((result, status))) == {u["id"] for u in members}
+    by_id = {row["id"]: row for row in result["rows"]}
+    assert by_id[members[0]["id"]]["last_login"] == "2026-10-01T12:30:45"
+    assert by_id[members[1]["id"]]["last_login"] is None
+
+
 def test_offset_without_limit_is_ignored(env):
-    """TC-US04-11: An offset without a limit is ignored.
+    """TC-US04-11 (R1.4): An offset without a limit is ignored.
 
     When the request has an offset but no limit, the offset is ignored and
     all project members are returned.
@@ -48,7 +72,7 @@ def test_offset_without_limit_is_ignored(env):
 
 
 def test_full_list_without_avatar_service(env):
-    """TC-US04-12: The full list still returns when the avatar service is down.
+    """TC-US04-12 (R1.4): The full list still returns when the avatar service is down.
 
     When the avatar service (social_get_users) fails, the endpoint still returns
     all users but with no avatar data.
