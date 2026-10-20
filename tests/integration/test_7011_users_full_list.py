@@ -11,14 +11,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))  # importlib import mode adds no sibling path
 
-from test_7011_users_paging import (  # noqa: E402,F401  (shared stubs and fixtures)
-    OUTSIDER_ID,
-    SYSTEM_USER_ID,
-    default_users,
-    env,
-    ids,
-    make_env,
-)
+import test_7011_users_paging as paging  # sibling module with the shared stubs
+
+# pytest registers a fixture under its own name, so these re-exports supply `env` and `make_env`.
+env = paging.env
+make_env = paging.make_env
 
 
 def test_no_limit_returns_all_project_users(env):
@@ -44,15 +41,15 @@ def test_no_limit_returns_all_project_users(env):
 
 def test_full_list_excludes_system_user_and_outsider_and_keeps_last_login(make_env):
     """R2.3, R1.4: The full list has no system user and no outsider; last_login stays ISO text."""
-    members = default_users()
+    members = paging.default_users()
     members[0]["last_login"] = datetime.datetime(2026, 10, 1, 12, 30, 45, 999)
     env = make_env(members)
 
     result, status = env.get()
 
     assert status == 200
-    assert {SYSTEM_USER_ID, OUTSIDER_ID}.isdisjoint(ids((result, status)))
-    assert set(ids((result, status))) == {u["id"] for u in members}
+    assert {paging.SYSTEM_USER_ID, paging.OUTSIDER_ID}.isdisjoint(paging.ids((result, status)))
+    assert set(paging.ids((result, status))) == {u["id"] for u in members}
     by_id = {row["id"]: row for row in result["rows"]}
     assert by_id[members[0]["id"]]["last_login"] == "2026-10-01T12:30:45"
     assert by_id[members[1]["id"]]["last_login"] is None
