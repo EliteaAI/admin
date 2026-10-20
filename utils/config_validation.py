@@ -43,15 +43,33 @@ def _cron_errors(field_schema, value):
     return [{"path": "", "message": "must be a valid cron expression"}]
 
 
+# Keep regex validation cheap: bound how much compile work one request can trigger.
+REGEX_LIST_MAX_PATTERNS = 100
+REGEX_LIST_MAX_PATTERN_LENGTH = 1000
+
+
 def _regex_list_errors(field_schema, value):
     """Reject list entries the consumer would fail to compile; names the index, never the text."""
     if field_schema.get("format") != "regex_list" or not isinstance(value, list):
         return []
+    if len(value) > REGEX_LIST_MAX_PATTERNS:
+        return [{
+            "path": "",
+            "message": f"must contain at most {REGEX_LIST_MAX_PATTERNS} patterns",
+        }]
     errors = []
     for index, pattern in enumerate(value):
+        if isinstance(pattern, str) and len(pattern) > REGEX_LIST_MAX_PATTERN_LENGTH:
+            errors.append({
+                "path": str(index),
+                "message": f"[{index}]: pattern is longer than {REGEX_LIST_MAX_PATTERN_LENGTH} characters",
+            })
+            continue
         try:
             re.compile(pattern)
-        except (re.error, TypeError):
+        # compile() can also raise OverflowError (e.g. ``a{4294967296}``) and
+        # RecursionError (deeply nested groups); both must stay a 400, not a 500.
+        except (re.error, TypeError, ValueError, OverflowError, RecursionError):
             errors.append({"path": str(index), "message": f"[{index}]: invalid regex"})
     return errors
 
