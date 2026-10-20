@@ -17,7 +17,6 @@
 
 """ API """
 import json
-from urllib.parse import unquote
 
 from flask import request
 
@@ -37,23 +36,21 @@ LIMIT_ERROR = "limit must be a whole number from 1 to 100"
 OFFSET_ERROR = "offset must be a whole number, 0 or more"
 
 
+def _is_whole(value):
+    return value.isascii() and value.isdigit()
+
+
 def _parse_page_args(args):
     """Return (limit, offset, error); limit is None when the request has no limit (R1.4)."""
     raw_limit = args.get("limit")
     if raw_limit is None:
         return None, 0, None
-    try:
-        limit = int(raw_limit)
-    except ValueError:
+    if not _is_whole(raw_limit) or not 1 <= int(raw_limit) <= 100:
         return None, 0, LIMIT_ERROR
-    if not 1 <= limit <= 100:
-        return None, 0, LIMIT_ERROR
-    try:
-        offset = int(args.get("offset", 0))
-    except ValueError:
+    raw_offset = args.get("offset", "0")
+    if not _is_whole(raw_offset):
         return None, 0, OFFSET_ERROR
-    if offset < 0:
-        return None, 0, OFFSET_ERROR
+    limit, offset = int(raw_limit), int(raw_offset)
     return limit, offset, None
 
 
@@ -97,7 +94,7 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
         project_users = self.module.get_users_roles_in_project(project_id, filter_system_user=True)
         all_users = auth.list_users(user_ids=set(project_users.keys()))
 
-        needle = unquote(request.args.get("query", "")).strip().casefold()
+        needle = request.args.get("query", "").strip().casefold()
         if needle:
             all_users = [u for u in all_users
                          if needle in (u.get("name") or "").casefold()
