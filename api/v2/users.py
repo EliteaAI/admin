@@ -17,6 +17,7 @@
 
 """ API """
 import json
+from urllib.parse import unquote
 
 from flask import request
 
@@ -94,28 +95,37 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
         if error:
             return {"msg": error}, 400
         project_users = self.module.get_users_roles_in_project(project_id, filter_system_user=True)
-        user_ids = set(project_users.keys())
-        all_users = auth.list_users(user_ids=user_ids)
+        all_users = auth.list_users(user_ids=set(project_users.keys()))
+
+        needle = unquote(request.args.get("query", "")).strip().casefold()
+        if needle:
+            all_users = [u for u in all_users
+                         if needle in (u.get("name") or "").casefold()
+                         or needle in (u.get("email") or "").casefold()]
+        total = len(all_users)
+
+        if limit is None:
+            result = all_users
+        else:
+            all_users.sort(key=lambda u: ((u.get("name") or "").casefold(), u["id"]))
+            result = all_users[offset:offset + limit]
 
         try:
-            social_data: list = self.module.context.rpc_manager.call.social_get_users(user_ids)
+            social_data: list = self.module.context.rpc_manager.call.social_get_users(
+                {u['id'] for u in result})
         except KeyError:
             social_data = []
 
         avatar_map = {i['user_id']: i.get('avatar') for i in social_data}
 
-        for user in all_users:
-            roles = project_users.pop(user['id'], [])
-            user['roles'] = roles
+        for user in result:
+            user['roles'] = project_users.get(user['id'], [])
             if user['last_login']:
                 user['last_login'] = user['last_login'].isoformat(timespec='seconds')
-            avatar = avatar_map.pop(user['id'], None)
-            user['avatar'] = avatar
-
-        result = all_users if limit is None else all_users[offset:offset + limit]
+            user['avatar'] = avatar_map.get(user['id'])
 
         return {
-            "total": len(all_users),
+            "total": total,
             "rows": result,
         }, 200
 
