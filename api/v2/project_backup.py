@@ -29,6 +29,7 @@ from tools import context  # pylint: disable=E0401
 from tools import constants as c  # pylint: disable=E0401
 
 from ...utils import backup_crypto
+from ...utils import chat_backup
 from ...utils.project_backup import iter_project_backup_sql, iter_pg_dump
 
 PROMPT_LIB_MODE = "prompt_lib"
@@ -48,8 +49,10 @@ def _slugify(value):
     return slug[:48] or "project"
 
 
-def _safe_stream(connection, project_id, schema, project_name, exclude_tables):
+def _safe_stream(connection, project_id, schema, project_name, exclude_tables, chats=None):
     """ Generate the redacted SQL dump, releasing the connection at the end """
+    chats = chats or {}
+    #
     def generate():
         try:
             for chunk in iter_project_backup_sql(
@@ -59,6 +62,9 @@ def _safe_stream(connection, project_id, schema, project_name, exclude_tables):
                     project_name=project_name,
                     safe_mode=True,
                     extra_excluded_tables=exclude_tables,
+                    included_tables=chats.get("tables", ()),
+                    row_filters=chats.get("row_filters"),
+                    header_extra=chats.get("header"),
             ):
                 yield chunk.encode("utf-8")
         except Exception as exc:  # pylint: disable=W0703
@@ -111,7 +117,49 @@ def resolve_encryption(policy, plain_requested=False):
     return True, master_key, None
 
 
-def make_backup_response(project_id, safe_mode, exclude_tables, encrypt=False, master_key=None):
+def _storage_client(project_id):
+    from tools import MinioClient  # pylint: disable=E0401,C0415
+    return MinioClient.from_project_id(project_id)
+
+
+def _read_chat_scope(connection, project_id, schema, user_id, with_sizes):
+    """ Chats and attachment files a backup with chats carries """
+    with connection.cursor() as cursor:
+        scope = chat_backup.resolve_chat_scope(cursor, schema, user_id)
+    connection.rollback()
+    #
+    if with_sizes and scope["attachments"]:
+        try:
+            client = _storage_client(project_id)
+            chat_backup.attach_file_sizes(scope["attachments"], client.list_files)
+        except Exception:  # pylint: disable=W0703
+            log.exception("project_backup: failed to list attachment files of project %s", project_id)
+            for item in scope["attachments"]:
+                item.setdefault("size", 0)
+                item.setdefault("status", chat_backup.ATTACHMENT_MISSING)
+    return scope
+
+
+def _zip_stream(project_id, sql_stream, info, attachments):
+    """ Archive with the SQL backup, the attachment files and the manifest """
+    client = _storage_client(project_id)
+    #
+    def read_file(bucket, name):
+        return client.download_file(bucket, name, project_id=project_id)
+    #
+    def generate():
+        try:
+            yield from chat_backup.iter_backup_zip(info, sql_stream, attachments, read_file)
+        finally:
+            sql_stream.close()
+    #
+    return generate()
+
+
+def make_backup_response(  # pylint: disable=R0913,R0914,R0915
+        project_id, safe_mode, exclude_tables, encrypt=False, master_key=None,
+        include_chats=chat_backup.CHATS_NONE, user=None,
+):
     """ Resolve the project schema and return a streaming SQL download """
     from tools import project_constants as pc  # pylint: disable=E0401,C0415
     schema = pc["PROJECT_SCHEMA_TEMPLATE"].format(project_id)
@@ -139,23 +187,59 @@ def make_backup_response(project_id, safe_mode, exclude_tables, encrypt=False, m
         log.exception("project_backup: failed to resolve project %s", project_id)
         return {"ok": False, "error": "failed to resolve project"}, 500
     #
+    chats = None
+    scope = None
+    with_files = include_chats == chat_backup.CHATS_WITH_ATTACHMENTS
+    if safe_mode and include_chats != chat_backup.CHATS_NONE:
+        user_id = (user or {}).get("id")
+        try:
+            scope = _read_chat_scope(connection, project_id, schema, user_id, with_files)
+        except Exception:  # pylint: disable=W0703
+            connection.close()
+            log.exception("project_backup: failed to resolve chats of project %s", project_id)
+            return {"ok": False, "error": "failed to resolve project chats"}, 500
+        #
+        chats = {
+            "tables": chat_backup.CHAT_BACKUP_TABLES,
+            "row_filters": chat_backup.chat_row_filters(schema, user_id),
+            "header": {
+                "chats_included": include_chats,
+                "chats_count": scope["chats_count"],
+                "attachments_count": len(scope["attachments"]),
+            },
+        }
+    #
+    variant = "safe" if safe_mode else "full"
+    if chats is not None:
+        variant += "-chats-files" if with_files else "-chats"
+    #
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
-    filename = "elitea-backup-{}-{}-{}-{}.sql".format(
-        project_id, _slugify(project_name), "safe" if safe_mode else "full", timestamp,
+    filename = "elitea-backup-{}-{}-{}-{}.{}".format(
+        project_id, _slugify(project_name), variant, timestamp, "zip" if with_files else "sql",
     )
     #
-    mimetype = "application/sql"
+    mimetype = "application/zip" if with_files else "application/sql"
     if encrypt:
         filename += backup_crypto.ENVELOPE_SUFFIX
         mimetype = backup_crypto.ENVELOPE_MIMETYPE
     #
     log.info(
-        "project_backup: exporting project %s (%s) in %s mode (encrypted=%s)",
+        "project_backup_created: project %s (%s) in %s mode (encrypted=%s, chats_included=%s,"
+        " chats=%s, attachments=%s)",
         project_id, schema, "safe" if safe_mode else "full", encrypt,
+        include_chats if chats is not None else chat_backup.CHATS_NONE,
+        scope["chats_count"] if scope else 0, len(scope["attachments"]) if scope else 0,
     )
     #
     if safe_mode:
-        stream = _safe_stream(connection, project_id, schema, project_name, exclude_tables)
+        stream = _safe_stream(connection, project_id, schema, project_name, exclude_tables, chats)
+        if with_files and chats is not None:
+            info = chat_backup.make_info(
+                project_id, project_name,
+                {"id": (user or {}).get("id"), "name": (user or {}).get("name")},
+                include_chats, scope,
+            )
+            stream = _zip_stream(project_id, stream, info, scope["attachments"])
     else:
         connection.close()
         stream = _full_stream(schema)
@@ -182,6 +266,34 @@ def _requested_exclude_tables():
 
 def _plain_requested():
     return (flask.request.args.get("encrypt") or "").strip().lower() in FALSE_VALUES
+
+
+def _requested_chats():
+    """ include_chats query value, or None when it is not a known option """
+    value = (flask.request.args.get("include_chats") or chat_backup.CHATS_NONE).strip().lower()
+    return value if value in chat_backup.CHAT_OPTIONS else None
+
+
+def make_chat_summary(project_id, user):
+    """ Chats, attachments and their size a backup with chats would carry """
+    from tools import project_constants as pc  # pylint: disable=E0401,C0415
+    schema = pc["PROJECT_SCHEMA_TEMPLATE"].format(project_id)
+    connection = context.db.engine.raw_connection()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "select 1 from information_schema.schemata where schema_name = %s", (schema,),
+            )
+            if cursor.fetchone() is None:
+                return {"ok": False, "error": "project schema not found"}, 404
+        scope = _read_chat_scope(connection, project_id, schema, (user or {}).get("id"), True)
+    except Exception:  # pylint: disable=W0703
+        log.exception("project_backup: failed to summarize chats of project %s", project_id)
+        return {"ok": False, "error": "failed to resolve project chats"}, 500
+    finally:
+        connection.close()
+    #
+    return {"ok": True, **chat_backup.summarize(scope)}, 200
 
 
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
@@ -270,6 +382,12 @@ class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
              "description": "Project ID to back up."},
             {"name": "exclude_tables", "in": "query", "schema": {"type": "string"},
              "description": "Comma-separated extra tables to skip."},
+            {"name": "include_chats", "in": "query",
+             "schema": {"type": "string", "enum": list(chat_backup.CHAT_OPTIONS), "default": "none"},
+             "description": "Also back up the project chats (team chats and the caller's own "
+                            "private chats): without_attachments adds the chat tables to the "
+                            "SQL backup, with_attachments downloads an encrypted ZIP with the "
+                            "SQL backup, a manifest and the attachment files."},
         ],
     )
     @auth.decorators.check_api({
@@ -295,8 +413,13 @@ class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         if error is not None:
             return {"ok": False, "error": error}, 400
         #
+        include_chats = _requested_chats()
+        if include_chats is None:
+            return {"ok": False, "error": "unknown include_chats option"}, 400
+        #
         return make_backup_response(
             project_id, True, _requested_exclude_tables(), encrypt, master_key,
+            include_chats=include_chats, user=auth.current_user(),
         )
 
 

@@ -108,12 +108,16 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
                 },
             )
         #
-        # Handle splash template update
-        if "splash_template" in data and data["splash_template"]:
-            log.info("Saving splash template")
-            config.tunable_set(
-                "splash_template", data["splash_template"].encode(),
-            )
+        # Handle splash template update (empty value resets to the default template)
+        if "splash_template" in data:
+            if data["splash_template"] and data["splash_template"].strip():
+                log.info("Saving splash template")
+                config.tunable_set(
+                    "splash_template", data["splash_template"].encode(),
+                )
+            else:
+                log.info("Resetting splash template to default")
+                config.tunable_delete("splash_template")
         #
         enabled = self._get_splash_enabled()
         #
