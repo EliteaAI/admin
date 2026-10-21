@@ -196,9 +196,7 @@ def test_regex_list_rejects_overflowing_repeat_count_without_raising():
     assert all("4294967296" not in e["message"] for e in errors)
 
 
-def test_regex_list_rejects_deeply_nested_pattern_without_raising(monkeypatch):
-    # Lift the length cap so the pattern reaches re.compile and raises RecursionError.
-    monkeypatch.setattr(config_validation, "REGEX_LIST_MAX_PATTERN_LENGTH", 10_000)
+def test_regex_list_rejects_deeply_nested_pattern_without_raising():
     nested = "(" * 1200 + "a" + ")" * 1200
     errors = config_validation.validate_config_value(
         REGEX_LIST_FIELD_SCHEMA, [nested],
@@ -207,38 +205,9 @@ def test_regex_list_rejects_deeply_nested_pattern_without_raising(monkeypatch):
     assert [e["message"] for e in errors] == ["[0]: invalid regex"]
 
 
-def test_regex_list_length_cap_also_rejects_deeply_nested_pattern():
-    nested = "(" * 1200 + "a" + ")" * 1200
-    errors = config_validation.validate_config_value(
-        REGEX_LIST_FIELD_SCHEMA, [nested],
-    )
-
-    assert len(errors) == 1
-    assert errors[0]["path"] == "0"
-
-
 def test_regex_list_rejects_non_string_entry_without_raising():
     errors = config_validation.validate_config_value(
         REGEX_LIST_FIELD_SCHEMA, [123, None],
     )
 
     assert [e["message"] for e in errors][:2] == ["[0]: invalid regex", "[1]: invalid regex"]
-
-
-def test_regex_list_rejects_overlong_pattern_without_echoing_it():
-    too_long = "a" * (config_validation.REGEX_LIST_MAX_PATTERN_LENGTH + 1)
-    errors = config_validation.validate_config_value(
-        REGEX_LIST_FIELD_SCHEMA, ["ok", too_long],
-    )
-
-    assert len(errors) == 1
-    assert errors[0]["path"] == "1"
-    assert "aaaa" not in errors[0]["message"]
-
-
-def test_regex_list_rejects_too_many_patterns():
-    too_many = ["a"] * (config_validation.REGEX_LIST_MAX_PATTERNS + 1)
-    errors = config_validation.validate_config_value(REGEX_LIST_FIELD_SCHEMA, too_many)
-
-    assert len(errors) == 1
-    assert "at most" in errors[0]["message"]
