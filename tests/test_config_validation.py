@@ -3,6 +3,8 @@
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 
 _MODULE_PATH = Path(__file__).parents[1] / "utils" / "config_validation.py"
 _SPEC = importlib.util.spec_from_file_location("config_validation", _MODULE_PATH)
@@ -211,3 +213,15 @@ def test_regex_list_rejects_non_string_entry_without_raising():
     )
 
     assert [e["message"] for e in errors][:2] == ["[0]: invalid regex", "[1]: invalid regex"]
+
+
+@pytest.mark.parametrize("pattern", [r"(a+)+$", r"(a*)*", r"(?:a|b+)*c", r"((a+))*", r"(?=(a+)+)"])
+def test_regex_list_rejects_nested_quantifier_without_echoing_it(pattern):
+    errors = config_validation.validate_config_value(REGEX_LIST_FIELD_SCHEMA, ["ok", pattern])
+
+    assert [e["message"] for e in errors] == ["[1]: nested quantifier is not allowed"]
+
+
+@pytest.mark.parametrize("pattern", [r"\d{3,}", r"AKIA[0-9]{4,16}", r"(foo|bar)+", r"(\d+\.){3}", r"(ab?)+"])
+def test_regex_list_accepts_bounded_or_flat_quantifiers(pattern):
+    assert config_validation.validate_config_value(REGEX_LIST_FIELD_SCHEMA, [pattern]) == []

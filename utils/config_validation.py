@@ -1,6 +1,8 @@
 """Validation helpers for schema-driven administration settings."""
 
 import re
+from re import _constants as sre_constants
+from re import _parser as sre_parser
 
 from croniter import croniter
 from jsonschema import Draft202012Validator
@@ -43,6 +45,35 @@ def _cron_errors(field_schema, value):
     return [{"path": "", "message": "must be a valid cron expression"}]
 
 
+_REPEAT_OPCODES = (sre_constants.MAX_REPEAT, sre_constants.MIN_REPEAT)
+
+
+def _subpatterns(value):
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, sre_parser.SubPattern):
+            yield item
+        elif isinstance(item, (list, tuple)):
+            stack.extend(item)
+
+
+def _has_nested_quantifier(parsed, inside_unbounded=False):
+    """True for ``(a+)+``-style shapes: a repeat inside an unbounded repeat backtracks
+    exponentially on a near-miss, and an allow pattern runs on every detection."""
+    for opcode, argument in parsed:
+        if opcode in _REPEAT_OPCODES:
+            _, max_count, body = argument
+            if inside_unbounded and max_count > 1:
+                return True
+            if _has_nested_quantifier(body, inside_unbounded or max_count == sre_constants.MAXREPEAT):
+                return True
+            continue
+        if any(_has_nested_quantifier(child, inside_unbounded) for child in _subpatterns(argument)):
+            return True
+    return False
+
+
 def _regex_list_errors(field_schema, value):
     """Reject list entries the consumer would fail to compile; names the index, never the text."""
     if field_schema.get("format") != "regex_list" or not isinstance(value, list):
@@ -51,10 +82,14 @@ def _regex_list_errors(field_schema, value):
     for index, pattern in enumerate(value):
         try:
             re.compile(pattern)
+            nested = _has_nested_quantifier(sre_parser.parse(pattern))
         # compile() can also raise OverflowError (e.g. ``a{4294967296}``) and
         # RecursionError (deeply nested groups); both must stay a 400, not a 500.
         except (re.error, TypeError, ValueError, OverflowError, RecursionError):
             errors.append({"path": str(index), "message": f"[{index}]: invalid regex"})
+            continue
+        if nested:
+            errors.append({"path": str(index), "message": f"[{index}]: nested quantifier is not allowed"})
     return errors
 
 
