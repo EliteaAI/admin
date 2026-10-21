@@ -3,6 +3,8 @@
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 
 _MODULE_PATH = Path(__file__).parents[1] / "utils" / "config_validation.py"
 _SPEC = importlib.util.spec_from_file_location("config_validation", _MODULE_PATH)
@@ -159,3 +161,67 @@ def test_an_unusable_stored_value_never_silences_a_save():
     assert config_validation.stored_value_is_unusable(BOOL_FIELD_SCHEMA, 0)
     assert config_validation.stored_value_is_unusable(CRON_FIELD_SCHEMA, "9 *")
     assert not config_validation.stored_value_is_unusable(CRON_FIELD_SCHEMA, "* * * * *")
+
+
+REGEX_LIST_FIELD_SCHEMA = {
+    "type": "array",
+    "format": "regex_list",
+    "value_schema": {"type": "array", "items": {"type": "string", "minLength": 1}},
+}
+
+
+def test_regex_list_accepts_valid_patterns():
+    assert config_validation.validate_config_value(
+        REGEX_LIST_FIELD_SCHEMA, [r"^ghp_TEST", r"AKIA[0-9]{4}"],
+    ) == []
+
+
+def test_regex_list_rejects_invalid_pattern_by_index_without_echoing_it():
+    errors = config_validation.validate_config_value(
+        REGEX_LIST_FIELD_SCHEMA, [r"ok", r"(unclosed", r"[z-a]"],
+    )
+
+    assert [e["message"] for e in errors] == ["[1]: invalid regex", "[2]: invalid regex"]
+    assert all("unclosed" not in e["message"] and "z-a" not in e["message"] for e in errors)
+
+
+def test_regex_list_check_applies_only_to_opted_in_fields():
+    assert config_validation.validate_config_value({"type": "array"}, ["(unclosed"]) == []
+
+
+def test_regex_list_rejects_overflowing_repeat_count_without_raising():
+    errors = config_validation.validate_config_value(
+        REGEX_LIST_FIELD_SCHEMA, ["ok", "a{4294967296}"],
+    )
+
+    assert [e["message"] for e in errors] == ["[1]: invalid regex"]
+    assert all("4294967296" not in e["message"] for e in errors)
+
+
+def test_regex_list_rejects_deeply_nested_pattern_without_raising():
+    nested = "(" * 1200 + "a" + ")" * 1200
+    errors = config_validation.validate_config_value(
+        REGEX_LIST_FIELD_SCHEMA, [nested],
+    )
+
+    assert [e["message"] for e in errors] == ["[0]: invalid regex"]
+
+
+def test_regex_list_rejects_non_string_entry_without_raising():
+    errors = config_validation.validate_config_value(
+        REGEX_LIST_FIELD_SCHEMA, [123, None],
+    )
+
+    assert [e["message"] for e in errors][:2] == ["[0]: invalid regex", "[1]: invalid regex"]
+
+
+@pytest.mark.parametrize("pattern", [r"(a+)+$", r"(a*)*", r"(?:a|b+)*c", r"((a+))*", r"(?=(a+)+)"])
+def test_regex_list_rejects_nested_quantifier_without_echoing_it(pattern):
+    errors = config_validation.validate_config_value(REGEX_LIST_FIELD_SCHEMA, ["ok", pattern])
+
+    assert [e["message"] for e in errors] == ["[1]: nested quantifier is not allowed"]
+
+
+@pytest.mark.parametrize("pattern", [r"\d{3,}", r"AKIA[0-9]{4,16}", r"(foo|bar)+", r"(\d+\.){3}", r"(ab?)+"])
+def test_regex_list_accepts_bounded_or_flat_quantifiers(pattern):
+    assert config_validation.validate_config_value(REGEX_LIST_FIELD_SCHEMA, [pattern]) == []
