@@ -9,6 +9,7 @@ existing backlog down to the Vault token plus the newest.
 The auth pylon and Vault are replaced by an in-memory world so ordering and
 "what survives" can be asserted exactly.
 """
+import datetime
 import importlib
 import importlib.util
 import sys
@@ -113,6 +114,15 @@ class FakeAuth:
             and (name is None or t["name"] == name)
         ]
 
+    def set_token_expiry(self, token_id, expires):
+        """auth_core: change the expiry, bump the token epoch, announce auth_invalidate."""
+        if token_id not in self.tokens:
+            return None
+        self.tokens[token_id]["expires"] = expires
+        self.events.append(("retire", token_id))
+        self.events.append(("invalidate", token_id))
+        return 1
+
     def delete_token(self, token_id):
         self.events.append(("delete", token_id))
         return 1 if self.tokens.pop(token_id, None) else 0
@@ -144,6 +154,7 @@ class World:
         self.vaults = {None: FakeVault(self)}
         self.project_ids = []
         self.sleeps = []
+        self.now = datetime.datetime(2026, 10, 15, 12, 0, 0)
 
     def add_project(self, project_id, backlog, vault_token="newest"):
         user_id = 1000 + project_id
@@ -195,6 +206,7 @@ def world(plugin_root, monkeypatch):
     mod.VaultClient = w.vault_client
     mod.log = RecordingLog()
     mod.time = types.SimpleNamespace(sleep=w.sleeps.append)
+    mod._now = lambda: w.now
 
     # Both lazy imports: projects' get_project_user, and the task's system_tokens
     projects_utils = types.ModuleType("plugins.projects.utils")
@@ -283,17 +295,20 @@ def test_repeated_rotation_stays_at_two_and_retires_the_old_vault_token(world):
     user_id, ids = world.add_project(5, 1)
     for _ in range(3):
         world.mod.rotate_project_tokens()
+        world.now += datetime.timedelta(hours=1)  # the grace window passes between rotations
     remaining = world.auth.ids_of(user_id)
     assert len(remaining) == 2
     assert ids[0] not in remaining  # a leaked token dies after two rotations
 
 
-def test_rotation_order_is_add_then_vault_then_delete(world):
+def test_rotation_order_is_add_then_vault_then_retire_then_delete(world):
     world.add_project(5, 3)
     world.mod.rotate_project_tokens()
     kinds = [kind for kind, _ in world.auth.events]
     assert kinds[:2] == ["add", "vault"]
-    assert set(kinds[2:]) == {"delete"}
+    assert set(kinds[2:]) == {"retire", "invalidate", "delete"}
+    # the predecessor is only given an expiry once Vault holds the new token
+    assert kinds.index("vault") < kinds.index("retire")
 
 
 def test_vault_and_newest_both_survive_when_they_differ(world):
@@ -303,8 +318,106 @@ def test_vault_and_newest_both_survive_when_they_differ(world):
     world.mod.rotate_project_tokens()
     remaining = world.auth.ids_of(user_id)
     assert remaining == [ids[0], ids[-1], max(remaining)]
+    world.now += datetime.timedelta(hours=1)
     world.mod.rotate_project_tokens()
     assert len(world.auth.ids_of(user_id)) == 2  # converges on the next cycle
+
+
+# --- retirement of the kept predecessor (#6489, #6944) ------------------------
+
+
+def test_kept_predecessor_expires_after_the_grace_instead_of_staying_permanent(world):
+    user_id, ids = world.add_project(5, 3)
+
+    world.mod.rotate_project_tokens()
+
+    assert world.auth.tokens[ids[-1]]["expires"] == world.now + datetime.timedelta(seconds=300)
+    new_token = max(world.auth.ids_of(user_id))
+    assert world.auth.tokens[new_token]["expires"] is None  # the new one is the permanent one
+
+
+def test_retirement_announces_the_predecessor_once(world):
+    _, ids = world.add_project(5, 3)
+
+    world.mod.rotate_project_tokens()
+
+    assert [e for e in world.auth.events if e[0] == "invalidate"] == [("invalidate", ids[-1])]
+
+
+def test_both_predecessors_are_retired_when_vault_and_newest_differ(world):
+    _, ids = world.add_project(5, 4, vault_token="oldest")
+
+    world.mod.rotate_project_tokens()
+
+    assert {e[1] for e in world.auth.events if e[0] == "retire"} == {ids[0], ids[-1]}
+
+
+def test_the_grace_is_configurable(world, monkeypatch):
+    monkeypatch.setattr(world.mod, "rotation_grace_s", lambda: 60)
+    _, ids = world.add_project(5, 2)
+
+    world.mod.rotate_project_tokens()
+
+    assert world.auth.tokens[ids[-1]]["expires"] == world.now + datetime.timedelta(seconds=60)
+
+
+def test_grace_defaults_to_300_and_reads_the_plugin_config(world, monkeypatch):
+    import tools
+    assert world.mod.rotation_grace_s() == 300  # the stub has no `this`
+
+    monkeypatch.setattr(
+        tools, "this",
+        types.SimpleNamespace(descriptor=types.SimpleNamespace(config={"rotation_grace_s": 45})),
+        raising=False,
+    )
+    assert world.mod.rotation_grace_s() == 45
+
+
+def test_a_predecessor_still_in_grace_survives_the_next_rotation(world):
+    user_id, ids = world.add_project(5, 1)
+    world.mod.rotate_project_tokens()
+    world.now += datetime.timedelta(seconds=100)  # inside the 300 s grace
+
+    world.mod.rotate_project_tokens()
+
+    assert ids[0] in world.auth.ids_of(user_id)
+
+
+def test_expired_predecessors_are_pruned_by_the_next_rotation(world):
+    user_id, ids = world.add_project(5, 1)
+    world.mod.rotate_project_tokens()
+    world.now += datetime.timedelta(seconds=301)
+
+    revoked = world.mod.rotate_project_tokens()
+
+    assert revoked["revoked"] == 1
+    assert ids[0] not in world.auth.ids_of(user_id)
+
+
+def test_a_failed_retirement_does_not_abort_the_rotation(world):
+    user_id, ids = world.add_project(5, 4)
+
+    def boom(token_id, expires):
+        raise RuntimeError("auth timeout")
+
+    world.auth.set_token_expiry = boom
+    stats = world.mod.rotate_project_tokens()
+
+    assert stats["rotated"] == 1 and stats["failed"] == 0
+    assert world.auth.tokens[ids[-1]]["expires"] is None  # left as before, and logged
+    assert world.mod.log.exceptions
+    assert len(world.auth.ids_of(user_id)) == 2  # the rest was still pruned
+
+
+def test_an_expiring_token_set_by_someone_else_is_not_mistaken_for_a_retirement(world):
+    user_id, _ = world.add_project(5, 2)
+    custom = world.auth.seed(user_id, 1, expires="2030-01-01")[0]
+    world.now += datetime.timedelta(days=1)
+
+    world.mod.rotate_project_tokens()
+    world.mod.rotate_project_tokens(keep_previous=False)
+
+    assert custom in world.auth.ids_of(user_id)
 
 
 # --- keep_previous=False: incident hard cut ----------------------------------
@@ -316,6 +429,18 @@ def test_hard_cut_leaves_only_the_new_token(world):
     remaining = world.auth.ids_of(user_id)
     assert len(remaining) == 1 and remaining[0] not in ids
     assert world.vaults[5].secrets["auth_token"] == f"jwt-{remaining[0]}"
+
+
+def test_hard_cut_retires_nothing_and_also_revokes_a_predecessor_still_in_grace(world):
+    user_id, ids = world.add_project(5, 2)
+    world.mod.rotate_project_tokens()  # ids[-1] now expires in 300 s
+    world.auth.events.clear()
+
+    world.mod.rotate_project_tokens(keep_previous=False)
+
+    remaining = world.auth.ids_of(user_id)
+    assert len(remaining) == 1 and remaining[0] not in ids
+    assert not [e for e in world.auth.events if e[0] in ("retire", "invalidate")]
 
 
 def test_hard_cut_admin(world):
