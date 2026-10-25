@@ -37,9 +37,17 @@ class Event:  # pylint: disable=R0903,E1101
         if not pylon_id:
             return
         #
+        now = time.time()
         data = payload.copy()
-        data["timestamp"] = time.time()
+        data["timestamp"] = now
         self.remote_runtimes[pylon_id] = data
+        #
+        stale_ids = [
+            pid for pid, pdata in list(self.remote_runtimes.items())
+            if now - pdata.get("timestamp", 0) > 90
+        ]
+        for pid in stale_ids:
+            self.remote_runtimes.pop(pid, None)
 
     @web.event("bootstrap_runtime_info_prune")
     def _bootstrap_runtime_info_prune(self, context, event, payload):  # pylint: disable=R0914
