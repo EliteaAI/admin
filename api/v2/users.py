@@ -32,6 +32,28 @@ from ...models.pd.user_input_field import UserInputFieldPD
 from ...utils import validate_role_assignment, get_role_validation_error
 
 
+LIMIT_ERROR = "limit must be a whole number from 1 to 100"
+OFFSET_ERROR = "offset must be a whole number, 0 or more"
+
+
+def _is_whole(value):
+    return value.isascii() and value.isdigit()
+
+
+def _parse_page_args(args):
+    """Return (limit, offset, error); limit is None when the request has no limit (R1.4)."""
+    raw_limit = args.get("limit")
+    if raw_limit is None:
+        return None, 0, None
+    if not _is_whole(raw_limit) or not 1 <= int(raw_limit) <= 100:
+        return None, 0, LIMIT_ERROR
+    raw_offset = args.get("offset", "0")
+    if not _is_whole(raw_offset):
+        return None, 0, OFFSET_ERROR
+    limit, offset = int(raw_limit), int(raw_offset)
+    return limit, offset, None
+
+
 class AdminAPI(api_tools.APIModeHandler):
     pass
 
@@ -66,38 +88,38 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
         }})
     @api_tools.endpoint_metrics
     def get(self, project_id: int, **kwargs):
+        limit, offset, error = _parse_page_args(request.args)
+        if error:
+            return {"msg": error}, 400
         project_users = self.module.get_users_roles_in_project(project_id, filter_system_user=True)
-        user_ids = set(project_users.keys())
-        all_users = auth.list_users(user_ids=user_ids)
+        all_users = auth.list_users(user_ids=set(project_users.keys()))
+
+        needle = request.args.get("query", "").strip().casefold()
+        if needle:
+            all_users = [u for u in all_users
+                         if needle in (u.get("name") or "").casefold()
+                         or needle in (u.get("email") or "").casefold()]
+        total = len(all_users)
+
+        all_users.sort(key=lambda u: ((u.get("name") or "").casefold(), u["id"]))
+        result = all_users if limit is None else all_users[offset:offset + limit]
 
         try:
-            social_data: list = self.module.context.rpc_manager.call.social_get_users(user_ids)
+            social_data: list = self.module.context.rpc_manager.call.social_get_users(
+                {u['id'] for u in result})
         except KeyError:
             social_data = []
 
         avatar_map = {i['user_id']: i.get('avatar') for i in social_data}
 
-        for user in all_users:
-            roles = project_users.pop(user['id'], [])
-            user['roles'] = roles
+        for user in result:
+            user['roles'] = project_users.get(user['id'], [])
             if user['last_login']:
                 user['last_login'] = user['last_login'].isoformat(timespec='seconds')
-            avatar = avatar_map.pop(user['id'], None)
-            user['avatar'] = avatar
-
-        result = all_users
-        # #
-        # limit = request.args.get("limit", None)
-        # offset = request.args.get("offset", None)
-        # #
-        # if limit is not None and offset is not None:
-        #     limit = int(limit)
-        #     offset = int(offset)
-        #     #
-        #     result = all_users[offset:offset+limit]
+            user['avatar'] = avatar_map.get(user['id'])
 
         return {
-            "total": len(all_users),
+            "total": total,
             "rows": result,
         }, 200
 
