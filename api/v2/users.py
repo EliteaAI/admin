@@ -101,11 +101,8 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
                          or needle in (u.get("email") or "").casefold()]
         total = len(all_users)
 
-        if limit is None:
-            result = all_users
-        else:
-            all_users.sort(key=lambda u: ((u.get("name") or "").casefold(), u["id"]))
-            result = all_users[offset:offset + limit]
+        all_users.sort(key=lambda u: ((u.get("name") or "").casefold(), u["id"]))
+        result = all_users if limit is None else all_users[offset:offset + limit]
 
         try:
             social_data: list = self.module.context.rpc_manager.call.social_get_users(

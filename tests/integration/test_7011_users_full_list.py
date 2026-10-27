@@ -89,3 +89,10 @@ def test_full_list_without_avatar_service(env):
     # Verify that avatars are None when service fails
     for row in result["rows"]:
         assert row.get("avatar") is None
+
+
+def test_full_list_is_sorted_like_a_page(env):
+    """The unpaged list has the same order as the paged list: name, then id."""
+    result = env.get()
+
+    assert paging.ids(result) == paging.ordered_ids(env.users)
