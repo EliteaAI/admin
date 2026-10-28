@@ -45,6 +45,11 @@ KIND_MCP = "mcp"
 
 CREDENTIALS_SECTION = "credentials"
 
+# Credentials Elitea creates for its own needs stay: S3 API keys back artifact
+# bucket access, system-sourced ones are platform-made. Mirrored in configurations
+INTERNAL_CREDENTIAL_TYPES = frozenset(("s3_api_credentials",))
+SYSTEM_SOURCE = "system"
+
 # A single delete refuses these; the bulk delete skips them
 BLOCKED_STATUSES = frozenset(("published", "embedded"))
 
@@ -81,6 +86,10 @@ def toolkit_kind(tool_type, meta):
 def application_kind(version_agent_types):
     """ An application with any pipeline version is a pipeline """
     return KIND_PIPELINE if KIND_PIPELINE in version_agent_types else KIND_AGENT
+
+
+def is_internal_credential(config_type, source):
+    return config_type in INTERNAL_CREDENTIAL_TYPES or source == SYSTEM_SOURCE
 
 
 def is_blocked(version_statuses):

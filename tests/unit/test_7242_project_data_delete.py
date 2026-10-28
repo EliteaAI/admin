@@ -134,6 +134,18 @@ def test_credentials_section():
     assert pdd.CREDENTIALS_SECTION == "credentials"
 
 
+@pytest.mark.parametrize("config_type, source, kept", [
+    ("s3_api_credentials", "user", True),
+    ("s3_api_credentials", "system", True),
+    ("github", "system", True),
+    ("github", "user", False),
+    ("postman", None, False),
+])
+def test_internal_credentials_are_kept(config_type, source, kept):
+    """ Elitea-made credentials (S3 API keys for bucket access, system configs) are not deleted """
+    assert pdd.is_internal_credential(config_type, source) is kept
+
+
 # ---------- authorization ----------
 
 @pytest.mark.parametrize("has_permission, own_project, allowed", [

@@ -90,12 +90,9 @@ def _entity_counts(project_id):
     except Exception:  # pylint: disable=W0703
         log.exception("project_data_delete: failed to count entities of project %s", project_id)
     try:
-        counts[pdd.TYPE_CREDENTIALS] = {
-            "count": _rpc(COUNT_RPC_TIMEOUT).configurations_count_section(
-                project_id=project_id, section=pdd.CREDENTIALS_SECTION,
-            ),
-            "blocked": 0,
-        }
+        counts[pdd.TYPE_CREDENTIALS] = _rpc(COUNT_RPC_TIMEOUT).configurations_count_section(
+            project_id=project_id, section=pdd.CREDENTIALS_SECTION,
+        )
     except Exception:  # pylint: disable=W0703
         log.exception("project_data_delete: failed to count credentials of project %s", project_id)
     return {name: counts.get(name) for name in pdd.SUPPORTED_TYPES if name != pdd.TYPE_CHATS}
