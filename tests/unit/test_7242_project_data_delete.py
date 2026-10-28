@@ -95,55 +95,8 @@ def test_visible_chats_leave_other_users_private_chats_out():
 
 # ---------- kinds ----------
 
-@pytest.mark.parametrize("tool_type, meta, kind", [
-    ("github", {}, "toolkit"),
-    ("github", None, "toolkit"),
-    ("github", {"mcp": False}, "toolkit"),
-    ("mcp", {}, "mcp"),
-    ("remote_tool", {"mcp": True}, "mcp"),
-    ("application", {}, None),
-    ("application", {"mcp": True}, None),
-])
-def test_toolkit_kind(tool_type, meta, kind):
-    assert pdd.toolkit_kind(tool_type, meta) == kind
-
-
-@pytest.mark.parametrize("agent_types, kind", [
-    (["react"], "agent"),
-    (["openai", "react"], "agent"),
-    (["react", "pipeline"], "pipeline"),
-    (["pipeline"], "pipeline"),
-    ([], "agent"),
-])
-def test_application_kind(agent_types, kind):
-    assert pdd.application_kind(agent_types) == kind
-
-
-@pytest.mark.parametrize("statuses, blocked", [
-    (["draft"], False),
-    (["draft", "unpublished", "rejected", "on_moderation", "user_approval"], False),
-    (["draft", "published"], True),
-    (["embedded"], True),
-    ([], False),
-])
-def test_published_or_embedded_is_blocked(statuses, blocked):
-    assert pdd.is_blocked(statuses) is blocked
-
-
 def test_credentials_section():
     assert pdd.CREDENTIALS_SECTION == "credentials"
-
-
-@pytest.mark.parametrize("config_type, source, kept", [
-    ("s3_api_credentials", "user", True),
-    ("s3_api_credentials", "system", True),
-    ("github", "system", True),
-    ("github", "user", False),
-    ("postman", None, False),
-])
-def test_internal_credentials_are_kept(config_type, source, kept):
-    """ Elitea-made credentials (S3 API keys for bucket access, system configs) are not deleted """
-    assert pdd.is_internal_credential(config_type, source) is kept
 
 
 # ---------- authorization ----------

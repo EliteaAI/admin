@@ -15,11 +15,10 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-""" Bulk delete of project data: requested types, how items are sorted into
-them, the outcome and its audit event
+""" Bulk delete of project data: requested types, the outcome and its audit event
 
-The kind rules mirror elitea_core (toolkits_listing, list_applications
-agents_type) and the published guards of the single deletes; keep them in sync.
+Which items of a type are deleted or skipped is decided by the plugins that own
+them (elitea_core, configurations), not here.
 """
 
 from . import chat_backup
@@ -45,14 +44,6 @@ KIND_MCP = "mcp"
 
 CREDENTIALS_SECTION = "credentials"
 
-# Credentials Elitea creates for its own needs stay: S3 API keys back artifact
-# bucket access, system-sourced ones are platform-made. Mirrored in configurations
-INTERNAL_CREDENTIAL_TYPES = frozenset(("s3_api_credentials",))
-SYSTEM_SOURCE = "system"
-
-# A single delete refuses these; the bulk delete skips them
-BLOCKED_STATUSES = frozenset(("published", "embedded"))
-
 STATUS_SUCCESS = "success"
 STATUS_PARTIAL = "partial"
 STATUS_FAILED = "failed"
@@ -72,28 +63,6 @@ def parse_types(payload):
         raise ValueError("unsupported types: {}".format(", ".join(str(item) for item in unknown)))
     #
     return [name for name in SUPPORTED_TYPES if name in types]
-
-
-def toolkit_kind(tool_type, meta):
-    """ mcp / toolkit, or None for an agent-as-tool entry (it belongs to its agent) """
-    if tool_type == "application":
-        return None
-    if tool_type == "mcp" or (meta or {}).get("mcp"):
-        return KIND_MCP
-    return KIND_TOOLKIT
-
-
-def application_kind(version_agent_types):
-    """ An application with any pipeline version is a pipeline """
-    return KIND_PIPELINE if KIND_PIPELINE in version_agent_types else KIND_AGENT
-
-
-def is_internal_credential(config_type, source):
-    return config_type in INTERNAL_CREDENTIAL_TYPES or source == SYSTEM_SOURCE
-
-
-def is_blocked(version_statuses):
-    return any(status in BLOCKED_STATUSES for status in version_statuses)
 
 
 def visible_chat_ids_sql(schema, user_id):
