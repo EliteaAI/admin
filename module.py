@@ -142,6 +142,15 @@ class Module(module.ModuleModel):
                 "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
             }
         })
+        # Bulk delete of project data (#7242): team project admins; a private
+        # project's owner is authorized by ownership in the endpoint
+        auth.register_permissions({
+            "permissions": ["models.project_data.delete"],
+            "recommended_roles": {
+                "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+                "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+            }
+        })
         auth.register_permissions({
             "permissions": ["configuration.roles"],
             "recommended_roles": {
