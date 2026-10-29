@@ -95,10 +95,13 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
         all_users = auth.list_users(user_ids=set(project_users.keys()))
 
         needle = request.args.get("query", "").strip().casefold()
+        match_roles = request.args.get("match_roles", "").strip().lower() == "true"
         if needle:
             all_users = [u for u in all_users
                          if needle in (u.get("name") or "").casefold()
-                         or needle in (u.get("email") or "").casefold()]
+                         or needle in (u.get("email") or "").casefold()
+                         or (match_roles and any(
+                             needle in role.casefold() for role in project_users.get(u["id"], [])))]
         total = len(all_users)
 
         all_users.sort(key=lambda u: ((u.get("name") or "").casefold(), u["id"]))
