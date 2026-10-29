@@ -17,6 +17,10 @@
 
 """ API """
 
+import time
+import uuid
+from queue import Empty
+
 import flask  # pylint: disable=E0401
 
 from pylon.core.tools import log  # pylint: disable=E0611,E0401
@@ -31,7 +35,6 @@ from .project_restore import _is_own_personal_project
 
 PROJECT_DATA_DELETE_PERMISSION = "models.project_data.delete"
 
-DELETE_RPC_TIMEOUT = 600
 COUNT_RPC_TIMEOUT = 30
 
 RECOMMENDED_ROLES = {
@@ -78,7 +81,7 @@ def _visible_chat_ids(project_id, user_id):
         connection.close()
 
 
-def _rpc(timeout=DELETE_RPC_TIMEOUT):
+def _rpc(timeout):
     return context.rpc_manager.timeout(timeout)
 
 
@@ -98,40 +101,64 @@ def _entity_counts(project_id):
     return {name: counts.get(name) for name in pdd.SUPPORTED_TYPES if name != pdd.TYPE_CHATS}
 
 
-def _delete_type(name, project_id, user_id, chat_ids):
-    """ Delete one type: {deleted, failed, skipped}. An RPC error fails the type, never the request """
+def _delete_type(name, project_id, user_id, chat_ids, time_budget):
+    """ Delete one type within time_budget seconds: {deleted, failed, skipped, remaining}.
+        An RPC error fails the type, never the request; a timed-out RPC is an unknown outcome """
+    rpc = _rpc(time_budget + pdd.RPC_TIMEOUT_MARGIN)
     calls = {
-        pdd.TYPE_CHATS: lambda: _rpc().chat_delete_conversations_rpc(
-            project_id=project_id, conversation_ids=chat_ids, folder_owner_id=user_id,
+        pdd.TYPE_CHATS: lambda: rpc.chat_delete_conversations_rpc(
+            project_id=project_id, conversation_ids=chat_ids, folder_owner_id=user_id, time_budget=time_budget,
         ),
-        pdd.TYPE_AGENTS: lambda: _rpc().applications_delete_by_kind(project_id=project_id, kind=pdd.KIND_AGENT),
-        pdd.TYPE_PIPELINES: lambda: _rpc().applications_delete_by_kind(
-            project_id=project_id, kind=pdd.KIND_PIPELINE,
+        pdd.TYPE_AGENTS: lambda: rpc.applications_delete_by_kind(
+            project_id=project_id, kind=pdd.KIND_AGENT, time_budget=time_budget,
         ),
-        pdd.TYPE_SKILLS: lambda: _rpc().skills_delete_all(project_id=project_id),
-        pdd.TYPE_TOOLKITS: lambda: _rpc().toolkits_delete_by_kind(project_id=project_id, kind=pdd.KIND_TOOLKIT),
-        pdd.TYPE_MCPS: lambda: _rpc().toolkits_delete_by_kind(project_id=project_id, kind=pdd.KIND_MCP),
-        pdd.TYPE_CREDENTIALS: lambda: _rpc().configurations_delete_section(
-            project_id=project_id, section=pdd.CREDENTIALS_SECTION,
+        pdd.TYPE_PIPELINES: lambda: rpc.applications_delete_by_kind(
+            project_id=project_id, kind=pdd.KIND_PIPELINE, time_budget=time_budget,
+        ),
+        pdd.TYPE_SKILLS: lambda: rpc.skills_delete_all(project_id=project_id, time_budget=time_budget),
+        pdd.TYPE_TOOLKITS: lambda: rpc.toolkits_delete_by_kind(
+            project_id=project_id, kind=pdd.KIND_TOOLKIT, time_budget=time_budget,
+        ),
+        pdd.TYPE_MCPS: lambda: rpc.toolkits_delete_by_kind(
+            project_id=project_id, kind=pdd.KIND_MCP, time_budget=time_budget,
+        ),
+        pdd.TYPE_CREDENTIALS: lambda: rpc.configurations_delete_section(
+            project_id=project_id, section=pdd.CREDENTIALS_SECTION, time_budget=time_budget,
         ),
     }
     if name == pdd.TYPE_CHATS and not chat_ids:
-        return {"deleted": 0, "failed": 0, "skipped": 0}
+        return pdd.type_result()
     try:
-        result = calls[name]() or {}
+        return pdd.type_result(calls[name]())
+    except Empty:
+        log.error("project_data_delete: %s delete timed out in project %s, outcome unknown", name, project_id)
+        return pdd.type_result(unknown=True)
     except Exception:  # pylint: disable=W0703
         log.exception("project_data_delete: %s delete failed in project %s", name, project_id)
-        return {"deleted": 0, "failed": 1, "skipped": 0}
-    return {key: result.get(key, 0) for key in ("deleted", "failed", "skipped")}
+        return pdd.type_result({"failed": 1})
 
 
-def _record_audit(project_id, user_id, types, results, status):
-    event = pdd.build_audit_event(project_id, user_id, types, results, status)
-    try:
-        this.for_module("tracing").module.security_audit_record_autocommit(event)
-    except Exception:  # pylint: disable=W0703
-        # The data is gone already: the response still reports what happened
-        log.exception("project_data_delete: audit record failed for project %s: %s", project_id, event)
+def _delete_types(types, project_id, user_id, chat_ids):
+    """ Delete the types in order within one time budget. Once it runs out, or a type's
+        outcome is unknown, the rest are not started and are reported as such """
+    deadline = time.monotonic() + pdd.TIME_BUDGET
+    results = {}
+    stop = False
+    for name in types:
+        time_left = deadline - time.monotonic()
+        if stop or time_left <= 0:
+            results[name] = pdd.not_started()
+            if name == pdd.TYPE_CHATS:
+                results[name]["remaining"] = len(chat_ids)
+            continue
+        results[name] = _delete_type(name, project_id, user_id, chat_ids, time_left)
+        stop = results[name].get("unknown", False)
+    return results
+
+
+def _record_audit(event):
+    """ Raises when the event cannot be written """
+    this.for_module("tracing").module.security_audit_record_autocommit(event)
 
 
 class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
@@ -203,13 +230,26 @@ class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         if chat_ids is None:
             return {"ok": False, "error": "project schema not found"}, 404
         #
-        results = {name: _delete_type(name, project_id, user_id, chat_ids) for name in types}
+        # Irreversible: nothing is deleted unless the start is on record
+        operation_id = str(uuid.uuid4())
+        try:
+            _record_audit(pdd.build_started_audit_event(project_id, user_id, types, operation_id))
+        except Exception:  # pylint: disable=W0703
+            log.exception("project_data_delete: start audit record failed for project %s", project_id)
+            return {"ok": False, "error": "audit record unavailable, nothing was deleted"}, 503
+        #
+        results = _delete_types(types, project_id, user_id, chat_ids)
         #
         status = pdd.aggregate_status(results)
-        _record_audit(project_id, user_id, types, results, status)
+        event = pdd.build_audit_event(project_id, user_id, types, results, status, operation_id)
+        try:
+            _record_audit(event)
+        except Exception:  # pylint: disable=W0703
+            # The data is gone already and the start is on record: the response still reports what happened
+            log.exception("project_data_delete: audit record failed for project %s: %s", project_id, event)
         log.info(
-            "project_data_delete: user %s deleted %s in project %s: %s",
-            user_id, types, project_id, results,
+            "project_data_delete: user %s deleted %s in project %s (%s): %s",
+            user_id, types, project_id, status, results,
         )
         #
         return {"ok": status != pdd.STATUS_FAILED, "status": status, "types": results}, 200

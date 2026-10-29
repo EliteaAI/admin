@@ -183,3 +183,76 @@ def test_audit_outcome(results, outcome):
 
 def test_audit_reason_code_is_valid():
     assert re.fullmatch(r"^[A-Z0-9_]+$", _event()["reason_code"])
+
+
+# ---------- time budget and unknown outcomes (review of #68) ----------
+
+def test_rpc_result_is_normalized_with_remaining():
+    assert pdd.type_result({"deleted": 2, "failed": 1}) == {"deleted": 2, "failed": 1, "skipped": 0, "remaining": 0}
+
+
+def test_timed_out_type_has_an_unknown_outcome():
+    item = pdd.type_result(unknown=True)
+    assert item["unknown"] is True and item["remaining"] is None
+
+
+@pytest.mark.parametrize("results", [
+    {"chats": {"deleted": 3, "failed": 0, "remaining": 4}},
+    {"chats": {"deleted": 3, "failed": 0}, "agents": pdd.not_started()},
+    {"chats": pdd.type_result(unknown=True)},
+    {"chats": {"deleted": 0, "failed": 2, "remaining": 1}},
+])
+def test_unfinished_run_is_incomplete_not_failed(results):
+    assert pdd.aggregate_status(results) == pdd.STATUS_INCOMPLETE
+
+
+def test_rpc_timeout_leaves_margin_within_the_budget():
+    assert pdd.TIME_BUDGET + pdd.RPC_TIMEOUT_MARGIN <= 600
+
+
+@pytest.mark.parametrize("results, outcome", [
+    ({"chats": {"deleted": 3, "failed": 0, "remaining": 4}}, "failed"),
+    ({"chats": {"deleted": 3, "failed": 0}, "agents": pdd.type_result(unknown=True)}, "target_outcome_unknown"),
+])
+def test_audit_outcome_of_an_incomplete_run(results, outcome):
+    assert _event(results=results)["outcome"] == outcome
+
+
+def test_audit_target_ref_marks_remaining_and_unknown():
+    results = {
+        "chats": {"deleted": 5, "failed": 0, "skipped": 0, "remaining": 7},
+        "agents": pdd.type_result(unknown=True),
+        "skills": pdd.not_started(),
+    }
+    event = pdd.build_audit_event(
+        project_id=3, actor_user_id=7, types=["chats", "agents", "skills"],
+        results=results, status=pdd.aggregate_status(results), operation_id="op-1",
+    )
+    assert event["target_ref"] == "chats=d5,f0,s0,r7;agents=d0,f0,s0,r?;skills=d0,f0,s0,r?"
+    assert event["operation_id"] == "op-1"
+
+
+def test_audit_target_ref_fits_with_remaining_and_large_counts():
+    results = {
+        name: {"deleted": 999999, "failed": 999999, "skipped": 999999, "remaining": 999999}
+        for name in pdd.SUPPORTED_TYPES
+    }
+    event = pdd.build_audit_event(
+        project_id=3, actor_user_id=7, types=list(pdd.SUPPORTED_TYPES),
+        results=results, status=pdd.aggregate_status(results),
+    )
+    assert len(event["target_ref"]) <= 256
+
+
+def test_started_audit_event_names_actor_types_and_operation():
+    event = pdd.build_started_audit_event(3, 7, ["chats", "agents"], "op-1")
+    assert event == {
+        "event_type": "lifecycle",
+        "reason_code": "PROJECT_DATA_DELETE_STARTED",
+        "project_id": 3,
+        "caller_ref": "user:7",
+        "operation_id": "op-1",
+        "target_ref": "chats,agents",
+    }
+    assert re.fullmatch(r"^[A-Z0-9_]+$", event["reason_code"])
+    assert len(event["reason_code"]) <= 64
