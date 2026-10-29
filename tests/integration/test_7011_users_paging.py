@@ -55,7 +55,7 @@ class Env:
 
     @staticmethod
     def _plugin(users, social_calls):
-        members = {u["id"]: ["viewer"] for u in users}
+        members = {u["id"]: u.get("roles", ["viewer"]) for u in users}
 
         def get_users_roles_in_project(project_id, filter_system_user=False):
             roles = dict(members)
@@ -227,6 +227,27 @@ def test_el7011_r2_1_r1_2_search_and_paging_total_counts_matches(make_env):
     assert status == 200
     assert body["total"] == 30
     assert ids((body, status)) == matches[10:20]
+
+
+def test_el7274_query_matches_project_role_ignoring_case(make_env):
+    users = default_users()
+    users[4]["roles"] = ["editor"]
+    users[30]["roles"] = ["viewer", "Editor-Lead"]
+    env = make_env(users)
+
+    body, status = env.get(limit=1, offset=1, query="EDITOR", match_roles="true")
+
+    assert status == 200
+    assert body["total"] == 2
+    assert ids((body, status)) == ordered_ids([users[4], users[30]])[1:]
+
+
+def test_el7274_role_is_not_matched_unless_asked(make_env):
+    users = default_users()
+    users[4]["roles"] = ["editor"]
+    env = make_env(users)
+
+    assert env.get(limit=20, offset=0, query="EDITOR") == ({"total": 0, "rows": []}, 200)
 
 
 @pytest.mark.parametrize("limit,count", [(1, 1), (100, 45)])
