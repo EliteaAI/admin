@@ -141,6 +141,12 @@ def _protected_project_ids():
         if support_project_id:
             protected.add(int(support_project_id))
     #
+    # SCIM-managed projects (#5202): their group in the IdP owns them
+    admin_module = context.module_manager.modules.get("admin")
+    scim = getattr(getattr(admin_module, "module", None), "scim", None)
+    if scim is not None:
+        protected.update(int(pid) for pid in scim.guards.protected_ids())
+    #
     return protected
 
 

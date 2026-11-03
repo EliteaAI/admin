@@ -24,6 +24,8 @@ from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
 from tools import auth  # pylint: disable=E0401
 from tools import api_tools, register_openapi  # pylint: disable=E0401
 
+from ...utils.scim.guards import refusal as scim_refusal
+
 
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     """ API """
@@ -54,6 +56,10 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         for project in data["projects"]:
             project_id = project["id"]
             project_name = project["name"]
+            #
+            if scim_refusal(self.module, project_id):
+                logs.append(f"Skipped {project_id} ({project_name}): its members are managed by SCIM")
+                continue
             #
             self.module.admin_update_roles_for_user(project_id, user_id, new_roles)
             logs.append(f"Added user {user_id} to {project_id} ({project_name}) as {new_roles}")

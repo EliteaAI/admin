@@ -24,6 +24,8 @@ from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
 from tools import auth  # pylint: disable=E0401
 from tools import api_tools, register_openapi  # pylint: disable=E0401
 
+from ...utils.scim.guards import refusal as scim_refusal
+
 
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     """ API """
@@ -47,6 +49,10 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         #
         project_id = int(data["project_id"])
         new_roles = [item.strip() for item in data["roles"].split(",")]
+        #
+        refusal = scim_refusal(self.module, project_id)
+        if refusal:
+            return refusal
         #
         for user in auth.list_users():
             log.debug("User: %s", user)

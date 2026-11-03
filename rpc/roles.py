@@ -8,6 +8,23 @@ from tools import rpc_tools, db, db_tools, auth
 from pylon.core.tools import web, log
 
 
+def _scim_guards(module):
+    """ SCIM project protection (#5202); None when SCIM provisioning is off. RPCs are bound to the
+        module, not to this class, so helpers must be plain functions """
+    scim = getattr(module, "scim", None)
+    return scim.guards if scim is not None else None
+
+
+def _refuse_scim_membership(module, project_id, scim_sync, roles=None, admin_grant=False):
+    """ admin_grant: an ELITEA admin adds a project admin (allowed with exactly the admin role) """
+    guards = _scim_guards(module)
+    if scim_sync or guards is None or guards.can_change_membership(project_id):
+        return
+    if not (admin_grant and roles is not None and guards.can_add_admin(project_id, roles)):
+        from ..utils.scim.guards import MANAGED_MESSAGE  # pylint: disable=C0415
+        raise PermissionError(MANAGED_MESSAGE)
+
+
 class RPC:
 
     #
@@ -89,7 +106,9 @@ class RPC:
     #
 
     @web.rpc("admin_add_user_to_project", "add_user_to_project")
-    def add_user_to_project(self, project_id: int, user_id: int, role_names: list[str], **kwargs) -> bool:
+    def add_user_to_project(self, project_id: int, user_id: int, role_names: list[str],
+                            scim_sync: bool = False, admin_grant: bool = False, **kwargs) -> bool:
+        _refuse_scim_membership(self, project_id, scim_sync, roles=role_names, admin_grant=admin_grant)
         user_roles = auth.list_project_user_roles(project_id, user_id)
         existing_role_ids = {r['role_id'] for r in user_roles}
         for role_name in role_names:
@@ -99,9 +118,11 @@ class RPC:
         return True
 
     @web.rpc("admin_remove_users_from_project", "remove_users_from_project")
-    def remove_users_from_project(self, project_id: int, user_ids: list[int], **kwargs) -> bool:
+    def remove_users_from_project(self, project_id: int, user_ids: list[int], scim_sync: bool = False,
+                                  **kwargs) -> bool:
         if not user_ids:
             return True
+        _refuse_scim_membership(self, project_id, scim_sync)
         for user_id in user_ids:
             auth.update_project_user_roles(project_id, user_id, [])
         # Fired here rather than at each call site: the user-deletion cascade tasks reach
@@ -145,6 +166,11 @@ class RPC:
 
     @web.rpc("update_roles_for_user", "admin_update_roles_for_user")
     def update_roles_for_user(self, project_id: int, user_ids: List[int], new_roles: List[str], **kwargs) -> bool:
+        guards = _scim_guards(self)
+        if guards is not None and guards.is_protected(project_id):
+            if not guards.can_set_roles(project_id, user_ids, new_roles, auth.list_project_users(project_id)):
+                from ..utils.scim.guards import MANAGED_MESSAGE  # pylint: disable=C0415
+                raise PermissionError(MANAGED_MESSAGE)
         roles_data = auth.list_project_roles(project_id)
         role_name_map = {r['name']: r['id'] for r in roles_data}
         target_role_ids = []

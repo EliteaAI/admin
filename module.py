@@ -34,6 +34,7 @@ class Module(module.ModuleModel):
         #
         self.modes = ["administration"]
         self.remote_runtimes = {}
+        self.scim = None
 
     def init(self):
         """ Init module """
@@ -149,6 +150,13 @@ class Module(module.ModuleModel):
             "recommended_roles": {
                 "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
                 "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+            }
+        })
+        # SCIM provisioning from an IdP (#5202): platform admins
+        auth.register_permissions({
+            "permissions": ["admin.scim.manage"],
+            "recommended_roles": {
+                "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
             }
         })
         auth.register_permissions({
@@ -390,7 +398,31 @@ class Module(module.ModuleModel):
         except Exception:  # pylint: disable=W0703
             log.warning("Could not register token rotation schedule", exc_info=True)
 
+        self._start_scim()
         self._register_openapi()
+
+    def _start_scim(self):
+        config = self.descriptor.config.get("scim") or {}
+        if not config.get("enabled", False):
+            return
+        from .utils.scim.runtime import ScimRuntime  # pylint: disable=C0415
+        try:
+            runtime = ScimRuntime(self, config)
+            runtime.start()
+            self.scim = runtime
+        except Exception:  # pylint: disable=W0703
+            log.exception("SCIM provisioning could not be started")
+            return
+        try:
+            self.context.rpc_manager.timeout(5).scheduling_create_if_not_exists({
+                'name': 'scim_sync',
+                'cron': '*/15 * * * *',
+                'rpc_func': 'admin_scim_sync',
+                'rpc_kwargs': {},
+                'active': True,
+            })
+        except Exception:  # pylint: disable=W0703
+            log.warning("Could not register the SCIM sync schedule", exc_info=True)
 
     def _register_openapi(self):
         from tools import openapi_registry  # pylint: disable=C0415,E0401
@@ -405,5 +437,7 @@ class Module(module.ModuleModel):
     def deinit(self):  # pylint: disable=R0201
         """ De-init module """
         log.info("De-initializing module")
+        if self.scim is not None:
+            self.scim.stop()
         # De-init
         # self.descriptor.deinit_all()
