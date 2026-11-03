@@ -573,7 +573,9 @@ def delete_users_with_private_projects_cascade(*args, **kwargs):  # pylint: disa
             #
             for team_project_id in team_project_ids:
                 log.info("Removing user_id=%s from team project_id=%s", user_id, team_project_id)
-                context.rpc_manager.call.admin_remove_users_from_project(team_project_id, [user_id])
+                context.rpc_manager.call.admin_remove_users_from_project(
+                    team_project_id, [user_id], system_cleanup=True,
+                )
             #
             if personal_project_id and personal_project:
                 log.info("Deleting personal project_id=%s for user_id=%s", personal_project_id, user_id)

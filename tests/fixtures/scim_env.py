@@ -55,13 +55,34 @@ def load():
     return loaded
 
 
+class SessionTracker:
+    """ get_session() over a SQLite file with every SCIM table created; counts the sessions open right now """
+
+    def __init__(self, base, directory):
+        engine = sa.create_engine(f"sqlite:///{directory}/scim.db").execution_options(
+            schema_translate_map={SCHEMA: None})
+        base.metadata.create_all(engine)
+        self.maker = sessionmaker(bind=engine)
+        self.open = 0
+
+    def __call__(self):
+        tracker = self
+
+        class _Session:
+            def __enter__(self):
+                tracker.open += 1
+                self.session = tracker.maker()
+                return self.session
+
+            def __exit__(self, *exc):
+                self.session.close()
+                tracker.open -= 1
+
+        return _Session()
+
+
 def session_factory(base, directory):
-    """A get_session() over a SQLite file with every SCIM table created"""
-    engine = sa.create_engine(f"sqlite:///{directory}/scim.db").execution_options(
-        schema_translate_map={SCHEMA: None})
-    base.metadata.create_all(engine)
-    maker = sessionmaker(bind=engine)
-    return lambda: closing(maker())
+    return SessionTracker(base, directory)
 
 
 class FakePlatform:
@@ -76,6 +97,10 @@ class FakePlatform:
         self.audit = []
         self.created_users = []
         self.fail_create_project = False
+        self.get_session = None   # set by tests that check no DB session is held across platform calls
+        self.sessions_during_calls = []
+        self.member_reads = []    # project ids whose members were read
+        self.cache_clears = []    # user id lists, one entry per clear
 
     # users
     def find_user(self, email):
@@ -99,8 +124,21 @@ class FakePlatform:
     def is_user_suspended(self, user_id):
         return self._user_by_id(user_id)["suspended"]
 
+    def is_protected_account(self, user_id):
+        """ platform admins and system users: never suspended by SCIM """
+        return bool(self._user_by_id(user_id).get("platform_admin")) or \
+            self._user_by_id(user_id)["email"].endswith("@centry.user")
+
     # projects
+    def project_name(self, project_id):
+        return (self.projects.get(project_id) or {}).get("name")
+
+    def _note_sessions(self):
+        if self.get_session is not None:
+            self.sessions_during_calls.append(self.get_session.open)
+
     def create_project(self, name):
+        self._note_sessions()
         if self.fail_create_project:
             raise RuntimeError("project creation failed")
         project_id = self.next_project_id
@@ -116,9 +154,15 @@ class FakePlatform:
 
     # membership
     def project_user_ids(self, project_id):
+        self._note_sessions()
+        self.member_reads.append(project_id)
         return list(self.members.get(project_id, {}))
 
+    def clear_user_projects_cache(self, user_ids):
+        self.cache_clears.append(sorted(user_ids))
+
     def add_member(self, project_id, user_id, role):
+        self._note_sessions()
         members = self.members.setdefault(project_id, {})
         if user_id in members:
             return False
@@ -126,6 +170,7 @@ class FakePlatform:
         return True
 
     def remove_member(self, project_id, user_id):
+        self._note_sessions()
         self.members.get(project_id, {}).pop(user_id, None)
 
     def record_audit(self, event):

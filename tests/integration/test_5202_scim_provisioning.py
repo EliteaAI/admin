@@ -227,6 +227,21 @@ def test_reactivation_does_not_unsuspend_a_user_suspended_by_someone_else(env):
     assert env.platform.is_user_suspended(5) is True
 
 
+@pytest.mark.parametrize("account", [
+    {"id": 6, "email": "boss@contoso.com", "platform_admin": True},
+    {"id": 7, "email": "system_user_3@centry.user"},
+])
+def test_platform_admins_and_system_users_are_never_suspended(env, account):
+    env.platform.users[account["email"]] = dict(account, suspended=False)
+    scim_user = env.svc.create_user(user_body(account["email"]))
+    assert env.svc.user_link(scim_user["id"]) == account["id"]
+    env.svc.patch_user(scim_user["id"], patch(("Replace", "active", "False")))
+    env.run()
+    env.svc.delete_user(scim_user["id"])
+    env.run()
+    assert env.platform.is_user_suspended(account["id"]) is False
+
+
 def test_deleted_user_is_removed_and_suspended(env):
     jane, = users(env, "jane@contoso.com")
     group = env.svc.create_group(group_body("Team", members=[jane["id"]]))
@@ -411,3 +426,106 @@ def test_writes_and_lifecycle_are_audited_without_secrets(env):
         assert event["event_type"] == "lifecycle"
         assert issued["token"] not in repr(event)
         assert all(len(str(v)) <= 256 for v in event.values())
+
+
+# ---------- replicas and efficiency (review of #70) ----------
+
+def test_two_replicas_create_one_project(env):
+    """ Two pylon_main replicas run the sync on the same DB: the group gets exactly one project """
+    other = projects_module.ProjectSync(env.get_session, env.platform)
+    group = env.svc.create_group(group_body("Team"))
+    env.sync.sync_all()
+    other.sync_all()
+    names = [p["name"] for p in env.platform.projects.values()]
+    assert names.count("Team") == 1
+    assert env.svc.group_summary(group["id"])["project_id"] is not None
+
+
+def test_no_db_session_is_held_across_platform_calls(env):
+    env.platform.get_session = env.get_session
+    jane, = users(env, "jane@contoso.com")
+    group = env.svc.create_group(group_body("Team", members=[jane["id"]]))
+    env.run()
+    env.svc.patch_group(group["id"], patch(("Remove", "members", None)))
+    env.run()
+    assert env.platform.sessions_during_calls and set(env.platform.sessions_during_calls) == {0}
+
+
+def test_only_changed_groups_are_synced(env):
+    jane, bob = users(env, "jane@contoso.com", "bob@contoso.com")
+    a = env.svc.create_group(group_body("A", members=[jane["id"]]))
+    b = env.svc.create_group(group_body("B", members=[bob["id"]]))
+    env.run()
+    env.platform.member_reads.clear()
+    env.svc.patch_group(a["id"], patch(("Remove", "members", None)))
+    env.run()
+    assert env.platform.member_reads == [env.project_of(a["id"])]
+    env.platform.member_reads.clear()
+    env.run()   # nothing changed since
+    assert env.platform.member_reads == []
+    assert env.project_of(b["id"])
+
+
+def test_full_sync_still_reaches_every_group(env):
+    """ Sync now / schedule: a full pass re-checks every group even without changes """
+    jane, = users(env, "jane@contoso.com")
+    group = env.svc.create_group(group_body("A", members=[jane["id"]]))
+    env.run()
+    env.platform.members[env.project_of(group["id"])].pop(5)   # drifted outside SCIM
+    env.sync.sync_all(full=True)
+    assert env.members(group["id"]) == {5: ["viewer"]}
+
+
+def test_project_user_cache_is_cleared_once_per_project(env):
+    jane, bob = users(env, "jane@contoso.com", "bob@contoso.com")
+    env.svc.create_group(group_body("Team", members=[jane["id"], bob["id"]]))
+    env.run()
+    assert len(env.platform.cache_clears) == 1 and len(env.platform.cache_clears[0]) == 2
+
+
+def test_nesting_change_marks_parents_for_sync(env):
+    a, b, _ = _nested(env)
+    env.run()
+    env.platform.member_reads.clear()
+    env.sync.set_edges({"ext-a": ["ext-b"]})
+    env.run()
+    assert env.platform.member_reads == [env.project_of(a["id"])]
+    assert set(env.members(a["id"])) == ids(env, "a@contoso.com", "b@contoso.com")
+
+
+def test_replica_without_the_lock_skips_the_pass(env):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def busy():
+        yield False
+
+    other = projects_module.ProjectSync(env.get_session, env.platform, lock=busy)
+    env.svc.create_group(group_body("Team"))
+    assert other.sync_all()["skipped"] is True
+    assert env.platform.projects == {1: env.platform.projects[1]}   # nothing created by the busy replica
+
+
+def test_group_that_got_a_project_meanwhile_is_not_created_again(env):
+    """ A replica read the group as project-less, another created the project before this one acted """
+    group = env.svc.create_group(group_body("Team"))
+    env.run()
+    first = env.project_of(group["id"])
+    stale = projects_module.ProjectSync(env.get_session, env.platform)
+    row = type("Row", (), {"id": group["id"], "display_name": "Team", "status": "pending", "project_id": None})
+    stale._create(row, {"created": 0})   # pylint: disable=W0212
+    assert env.project_of(group["id"]) == first
+    assert [p["name"] for p in env.platform.projects.values()].count("Team") == 1
+
+
+def test_project_changes_notify_other_replicas(env):
+    notified = []
+    env.sync.on_projects_changed = lambda: notified.append(True)
+    jane, = users(env, "jane@contoso.com")
+    group = env.svc.create_group(group_body("Team", members=[jane["id"]]))
+    env.run()
+    assert notified
+    notified.clear()
+    env.svc.delete_group(group["id"])
+    env.run()
+    assert notified

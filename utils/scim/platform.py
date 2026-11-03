@@ -46,6 +46,18 @@ class Platform:
         except Exception:  # pylint: disable=W0703
             return False
 
+    @staticmethod
+    def is_protected_account(user_id):
+        """ Platform admins and system users: never suspended by SCIM """
+        try:
+            email = auth.get_user(user_id=user_id).get("email") or ""
+            if email.endswith("@centry.user"):
+                return True
+            roles = auth.get_user_roles(user_id, mode="administration") or []
+            return bool({"admin", "super_admin", "system"} & set(roles))
+        except Exception:  # pylint: disable=W0703
+            return True   # unknown: do not suspend
+
     def service_user_id(self):
         """ The account SCIM requests act as and SCIM projects are owned by; created on first use """
         if self._service_user_id:

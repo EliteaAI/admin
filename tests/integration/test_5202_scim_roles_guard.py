@@ -77,6 +77,7 @@ def rpc(monkeypatch):
         monkeypatch.setitem(sys.modules, name, package)
     guards_stub = types.ModuleType("fakeadmin5202.utils.scim.guards")
     guards_stub.MANAGED_MESSAGE = "managed by SCIM"
+    guards_stub.ScimManagedError = type("ScimManagedError", (PermissionError,), {"__init__": lambda self: None})
     monkeypatch.setitem(sys.modules, "fakeadmin5202.utils.scim.guards", guards_stub)
     spec = importlib.util.spec_from_file_location("fakeadmin5202.rpc.roles", PLUGIN_ROOT / "rpc" / "roles.py")
     module = importlib.util.module_from_spec(spec)

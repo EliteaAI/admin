@@ -21,8 +21,8 @@ def _refuse_scim_membership(module, project_id, scim_sync, roles=None, admin_gra
     if scim_sync or guards is None or guards.can_change_membership(project_id):
         return
     if not (admin_grant and roles is not None and guards.can_add_admin(project_id, roles)):
-        from ..utils.scim.guards import MANAGED_MESSAGE  # pylint: disable=C0415
-        raise PermissionError(MANAGED_MESSAGE)
+        from ..utils.scim.guards import ScimManagedError  # pylint: disable=C0415
+        raise ScimManagedError()
 
 
 class RPC:
@@ -119,10 +119,11 @@ class RPC:
 
     @web.rpc("admin_remove_users_from_project", "remove_users_from_project")
     def remove_users_from_project(self, project_id: int, user_ids: list[int], scim_sync: bool = False,
-                                  **kwargs) -> bool:
+                                  system_cleanup: bool = False, **kwargs) -> bool:
+        """ system_cleanup: a platform task deleting the user (not a manual membership edit), allowed on SCIM projects """
         if not user_ids:
             return True
-        _refuse_scim_membership(self, project_id, scim_sync)
+        _refuse_scim_membership(self, project_id, scim_sync or system_cleanup)
         for user_id in user_ids:
             auth.update_project_user_roles(project_id, user_id, [])
         # Fired here rather than at each call site: the user-deletion cascade tasks reach
@@ -169,8 +170,8 @@ class RPC:
         guards = _scim_guards(self)
         if guards is not None and guards.is_protected(project_id):
             if not guards.can_set_roles(project_id, user_ids, new_roles, auth.list_project_users(project_id)):
-                from ..utils.scim.guards import MANAGED_MESSAGE  # pylint: disable=C0415
-                raise PermissionError(MANAGED_MESSAGE)
+                from ..utils.scim.guards import ScimManagedError  # pylint: disable=C0415
+                raise ScimManagedError()
         roles_data = auth.list_project_roles(project_id)
         role_name_map = {r['name']: r['id'] for r in roles_data}
         target_role_ids = []

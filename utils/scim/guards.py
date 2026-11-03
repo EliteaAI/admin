@@ -1,11 +1,8 @@
 """ Protection of SCIM-managed projects (#5202): only member roles may be changed by people """
 import time
 
-from sqlalchemy import select
 
-from ...models.scim import ScimProject
-
-CACHE_TTL_S = 30
+CACHE_TTL_S = 10   # fallback: changes are also announced to every replica (admin_scim_projects_changed)
 MANAGED_MESSAGE = "This project is managed by SCIM: only member roles can be changed and admins added."
 ADMIN_ROLE = "admin"
 
@@ -20,6 +17,8 @@ class Guards:
         loaded_at, ids = self._cache
         if self.ttl and time.monotonic() - loaded_at < self.ttl:
             return ids
+        from sqlalchemy import select  # pylint: disable=C0415
+        from ...models.scim import ScimProject  # pylint: disable=C0415
         with self.get_session() as session:
             ids = frozenset(session.scalars(select(ScimProject.project_id).where(ScimProject.protected.is_(True))))
         self._cache = (time.monotonic(), ids)
@@ -43,6 +42,13 @@ class Guards:
         """ ELITEA admins may add project admins (role admin only) to a SCIM project """
         return not self.is_protected(project_id) or list(roles) == [ADMIN_ROLE]
 
+    def refusal(self, project_id, allowed=None):
+        """ The API's 403 while the project is managed by SCIM, else None.
+            ``allowed(guards)`` -> True lets this particular change through (roles, admin grant). """
+        if not self.is_protected(project_id) or (allowed is not None and allowed(self)):
+            return None
+        return {"error": MANAGED_MESSAGE, "scim_managed": True}, 403
+
     def can_set_roles(self, project_id, user_ids, roles, member_ids) -> bool:
         """ roles of existing members to a non-empty set: an empty set removes, a non-member would be added """
         if not self.is_protected(project_id):
@@ -50,9 +56,14 @@ class Guards:
         return bool(roles) and set(user_ids) <= set(member_ids)
 
 
-def refusal(module, project_id):
-    """ (body, 403) while the project is managed by SCIM, else None; for API handlers of the admin plugin """
+class ScimManagedError(PermissionError):
+    """ A change to a SCIM-managed project that people may not make """
+
+    def __init__(self):
+        super().__init__(MANAGED_MESSAGE)
+
+
+def refusal(module, project_id, allowed=None):
+    """ Guards.refusal of the module's SCIM runtime; None when SCIM provisioning is off """
     scim = getattr(module, "scim", None)
-    if scim is not None and scim.guards.is_protected(project_id):
-        return {"error": MANAGED_MESSAGE, "scim_managed": True}, 403
-    return None
+    return scim.guards.refusal(project_id, allowed) if scim is not None else None

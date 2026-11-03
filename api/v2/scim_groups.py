@@ -36,7 +36,7 @@ class AdminAPI(api_tools.APIModeHandler):
             return {"error": "Unknown action"}, 404
         if not any(r["id"] == group_id for r in scim.sync.overview()):
             return {"error": "Group not found"}, 404
-        scim.request_sync(graph_pull=True)
+        scim.request_sync(graph_pull=True, full=True)
         return {"scheduled": True}, 202
 
 

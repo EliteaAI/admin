@@ -155,10 +155,16 @@ def task_env(lifecycle_tasks):
     def projects_get_personal_project_id(user_id):
         return personal_project_by_user.get(user_id)
 
-    def admin_check_user_in_projects(_project_ids, _user_id):
-        return []
+    team_memberships = {}  # user_id -> [team project ids]
 
-    def admin_remove_users_from_project(project_id, user_ids):
+    def admin_check_user_in_projects(_project_ids, user_id):
+        return list(team_memberships.get(user_id, []))
+
+    def admin_remove_users_from_project(project_id, user_ids, system_cleanup=False, **kwargs):
+        # The real RPC refuses removals from SCIM-managed projects unless the caller is a platform
+        # cleanup (#5202): user deletion must say so, or members of SCIM teams can never be deleted
+        if not system_cleanup:
+            raise PermissionError("This project is managed by SCIM")
         removed_from_project.append((project_id, list(user_ids)))
 
     rpc_funcs = {
@@ -239,6 +245,7 @@ def task_env(lifecycle_tasks):
         personal_project_by_user=personal_project_by_user,
         deleted_project_ids=deleted_project_ids,
         removed_from_project=removed_from_project,
+        team_memberships=team_memberships,
     )
 
 
@@ -468,6 +475,22 @@ class TestDeleteUsersCascade:
         #
         assert 10 not in task_env.users
         assert task_env.deleted_project_ids == [101]
+
+    def test_member_of_scim_team_project_is_deleted(self, lifecycle_tasks, task_env):
+        """#5202: removal from team projects is a platform cleanup, allowed on SCIM-managed projects."""
+        task_env.users[10] = {"id": 10, "email": "member@x.com", "suspended": False}
+        task_env.projects[101] = {"id": 101, "name": "project_user_10", "owner_id": 10, "suspended": False}
+        task_env.projects[7] = {"id": 7, "name": "Sales", "owner_id": 1, "suspended": False}
+        task_env.personal_project_by_user[10] = 101
+        task_env.team_memberships[10] = [7]
+        #
+        lifecycle_tasks.delete_users_with_private_projects_cascade(
+            param=_param(user_ids=[10], dry_run=False, confirm=True),
+            _executing_user_id="99",
+        )
+        #
+        assert task_env.removed_from_project == [(7, [10])]
+        assert 10 not in task_env.users
 
     def test_public_personal_project_blocks_deletion(self, lifecycle_tasks, task_env):
         """B5: a personal project that happens to be the protected public project id is never deleted."""

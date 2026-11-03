@@ -57,6 +57,8 @@ class ScimGroup(db.Base):
     project_id: Mapped[int] = mapped_column(Integer, nullable=True, unique=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default='pending')  # pending|active|removed|error
     error: Mapped[str] = mapped_column(String(512), nullable=True)
+    # set by SCIM writes and nesting changes, cleared when the sync has handled the group
+    dirty: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())

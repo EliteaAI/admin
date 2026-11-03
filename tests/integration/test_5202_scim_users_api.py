@@ -11,6 +11,22 @@ PLUGIN_ROOT = pathlib.Path(__file__).resolve().parents[2]
 PROTECTED, NORMAL = 7, 3
 
 
+class FakeGuards:
+    def is_protected(self, project_id):
+        return project_id == PROTECTED
+
+    def refusal(self, project_id, allowed=None):
+        if not self.is_protected(project_id) or (allowed is not None and allowed(self)):
+            return None
+        return {"error": "managed by SCIM", "scim_managed": True}, 403
+
+    def can_add_admin(self, project_id, roles):
+        return list(roles) == ["admin"]
+
+    def can_set_roles(self, project_id, user_ids, roles, member_ids):
+        return bool(roles) and set(user_ids) <= set(member_ids)
+
+
 class Request:
     def __init__(self):
         self.json = {}
@@ -23,6 +39,7 @@ def api(monkeypatch):
     calls = []
     auth = types.ModuleType("tools.auth")
     auth.decorators = types.SimpleNamespace(check_api=lambda config: (lambda f: f))
+    auth.list_project_users = lambda project_id: [5]
     tools = types.ModuleType("tools")
     tools.auth = auth
     tools.api_tools = types.SimpleNamespace(APIModeHandler=object, APIBase=object, endpoint_metrics=lambda f: f)
@@ -57,12 +74,17 @@ def api(monkeypatch):
         calls.append((email, project_id, roles, admin_grant))
         return {"status": "ok", "id": 9, "email": email}
 
+    def update_roles_for_user(project_id, user_ids, roles):
+        calls.append(("roles", project_id, list(user_ids), roles))
+        return True
+
     instance = module.API()
     instance.module = types.SimpleNamespace(
-        scim=types.SimpleNamespace(guards=types.SimpleNamespace(is_protected=lambda pid: pid == PROTECTED)),
+        scim=types.SimpleNamespace(guards=FakeGuards()),
         context=types.SimpleNamespace(
             rpc_manager=types.SimpleNamespace(call=types.SimpleNamespace(
-                add_user_to_project_or_create=add_user_to_project_or_create)),
+                add_user_to_project_or_create=add_user_to_project_or_create,
+                update_roles_for_user=update_roles_for_user)),
             event_manager=types.SimpleNamespace(fire_event=lambda *a: None)),
         remove_users_from_project=lambda *a: calls.append(("remove",) + a),
     )
@@ -104,3 +126,22 @@ def test_remove_from_scim_project_is_refused_even_in_administration(api):
     result = instance.delete(project_id=PROTECTED, mode="administration")
     assert result[1] == 403 and calls == []
 
+
+
+def put(api, project_id, user_id, roles):
+    instance, request, _ = api
+    request.json = {"id": user_id, "roles": roles}
+    return instance.put(project_id=project_id, mode="administration")
+
+
+def test_role_change_of_member_in_scim_project_is_allowed(api):
+    result = put(api, PROTECTED, 5, ["editor"])
+    assert result[1] == 200 and api[2] == [("roles", PROTECTED, [5], ["editor"])]
+
+
+@pytest.mark.parametrize("user_id, roles", [(5, []), (9, ["viewer"])])
+def test_role_change_that_removes_or_adds_is_refused_before_the_rpc(api, user_id, roles):
+    """ The RPC's own refusal arrives as a RuntimeError over RPC: the API checks first and answers 403 """
+    result = put(api, PROTECTED, user_id, roles)
+    assert result[1] == 403 and result[0]["scim_managed"] is True
+    assert api[2] == []

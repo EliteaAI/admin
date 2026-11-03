@@ -209,6 +209,7 @@ class ScimService:
             session.commit()
             result = self._user_resource(row)
         self._audit("SCIM_USER_UPDATED", f"scim_user:{user_id}")
+        self._mark_user_groups(user_id)
         self.on_user_changed(user_id)
         return result
 
@@ -226,8 +227,17 @@ class ScimService:
             session.commit()
             result = self._user_resource(row)
         self._audit("SCIM_USER_UPDATED", f"scim_user:{user_id}")
+        self._mark_user_groups(user_id)
         self.on_user_changed(user_id)
         return result
+
+    def _mark_user_groups(self, user_id):
+        """ A user's active state or email changed: every group they are in needs a sync """
+        with self.get_session() as session:
+            group_ids = select(ScimGroupMember.group_id).where(ScimGroupMember.user_id == user_id)
+            session.query(ScimGroup).filter(ScimGroup.id.in_(group_ids)).update(
+                {ScimGroup.dirty: True}, synchronize_session=False)
+            session.commit()
 
     @staticmethod
     def _patch_user_attribute(resource, op, key, value):
@@ -253,6 +263,8 @@ class ScimService:
             row = self._get_user_row(session, user_id)
             group_ids = list(session.scalars(select(ScimGroupMember.group_id).where(ScimGroupMember.user_id == user_id)))
             session.query(ScimGroupMember).filter(ScimGroupMember.user_id == user_id).delete()
+            session.query(ScimGroup).filter(ScimGroup.id.in_(group_ids)).update(
+                {ScimGroup.dirty: True}, synchronize_session=False)
             row.deleted = True
             row.active = False
             row.user_name = f"deleted:{row.id}:{row.user_name}"[:256]
@@ -323,7 +335,8 @@ class ScimService:
 
     def create_group(self, resource):
         with self.get_session() as session:
-            row = ScimGroup(status=GROUP_PENDING, created_at=now(), updated_at=now(), last_activity_at=now())
+            row = ScimGroup(status=GROUP_PENDING, dirty=True, created_at=now(), updated_at=now(),
+                            last_activity_at=now())
             self._set_name(session, row, resource.get("displayName"))
             row.external_id = (resource.get("externalId") or None) and str(resource["externalId"])[:256]
             session.add(row)
@@ -365,6 +378,7 @@ class ScimService:
             self._remove_members(session, group_id, None)
             self._add_members(session, group_id, resource.get("members"))
             row.updated_at = row.last_activity_at = now()
+            row.dirty = True
             session.commit()
             result = self._group_resource(session, row)
         self._audit("SCIM_GROUP_UPDATED", f"scim_group:{group_id}")
@@ -406,6 +420,7 @@ class ScimService:
                     self._remove_members(session, group_id, [protocol.member_filter_value(path)])
                     changed = True
             row.updated_at = row.last_activity_at = now()
+            row.dirty = row.dirty or changed
             session.commit()
         self._audit("SCIM_GROUP_UPDATED", f"scim_group:{group_id}")
         if changed:
@@ -418,6 +433,7 @@ class ScimService:
             row = self._get_group_row(session, group_id)
             self._remove_members(session, group_id, None)
             row.status = GROUP_REMOVED
+            row.dirty = True
             row.display_name = f"{row.display_name} (removed {row.id[:8]})"[:256]
             row.updated_at = row.last_activity_at = now()
             session.commit()
