@@ -141,6 +141,12 @@ def _protected_project_ids():
         if support_project_id:
             protected.add(int(support_project_id))
     #
+    # SCIM-managed projects (#5202): their group in the IdP owns them
+    admin_module = context.module_manager.modules.get("admin")
+    scim = getattr(getattr(admin_module, "module", None), "scim", None)
+    if scim is not None:
+        protected.update(int(pid) for pid in scim.guards.protected_ids())
+    #
     return protected
 
 
@@ -567,7 +573,9 @@ def delete_users_with_private_projects_cascade(*args, **kwargs):  # pylint: disa
             #
             for team_project_id in team_project_ids:
                 log.info("Removing user_id=%s from team project_id=%s", user_id, team_project_id)
-                context.rpc_manager.call.admin_remove_users_from_project(team_project_id, [user_id])
+                context.rpc_manager.call.admin_remove_users_from_project(
+                    team_project_id, [user_id], system_cleanup=True,
+                )
             #
             if personal_project_id and personal_project:
                 log.info("Deleting personal project_id=%s for user_id=%s", personal_project_id, user_id)

@@ -191,7 +191,7 @@ def delete_ghost_users(*args, **kwargs):  # pylint: disable=W0613,R0914
                     log.info("--> Deleting from project")
                     #
                     context.rpc_manager.call.admin_remove_users_from_project(
-                        user_in_id, [user_id],
+                        user_in_id, [user_id], system_cleanup=True,
                     )
                     #
                     log.info("--> Deleted")

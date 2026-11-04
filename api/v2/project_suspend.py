@@ -22,6 +22,7 @@ from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
 
 from tools import auth, api_tools, db, register_openapi  # pylint: disable=E0401
 
+from ...utils.scim.guards import refusal as scim_refusal
 
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903,C0115
     @register_openapi(
@@ -41,6 +42,9 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903,C0115
     @api_tools.endpoint_metrics
     def put(self, project_id: int, **kwargs):
         """ Toggle project suspended state """
+        refusal = scim_refusal(self.module, project_id)
+        if refusal:
+            return refusal
         from plugins.projects.models.project import Project
 
         suspended = request.json.get("suspended")

@@ -27,6 +27,8 @@ from pylon.core.tools import log  # pylint: disable=E0611,E0401
 
 from tools import auth, api_tools, register_openapi  # pylint: disable=E0401
 from tools import context  # pylint: disable=E0401
+
+from ...utils.scim.guards import refusal as scim_refusal
 from tools import constants as c  # pylint: disable=E0401
 
 from ...utils import backup_crypto
@@ -554,6 +556,9 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     def post(self, project_id: int, **kwargs):
         """ Process POST """
         _ = kwargs
+        refusal = scim_refusal(self.module, project_id)
+        if refusal:
+            return refusal
         #
         return apply_uploaded_backup(
             project_id, policy=backup_crypto.handler_policy(self),
@@ -609,6 +614,9 @@ class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     def post(self, project_id: int, **kwargs):
         """ Process POST """
         _ = kwargs
+        refusal = scim_refusal(self.module, project_id)
+        if refusal:
+            return refusal
         #
         # Safe artifacts may be restored across projects via allow_project_mismatch=true;
         # authorization is enforced on the TARGET project (models.project_backup.restore

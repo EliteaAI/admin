@@ -8,3 +8,8 @@ plugins:
   preselected:
   - 0
   - 1
+# SCIM provisioning from an IdP (#5202): every provisioned group becomes a protected team project.
+# public_url: the deployment URL the IdP calls (shown as Tenant URL)
+scim:
+  enabled: false
+  public_url: ""

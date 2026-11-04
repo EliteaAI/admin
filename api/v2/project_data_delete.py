@@ -28,6 +28,7 @@ from pylon.core.tools import log  # pylint: disable=E0611,E0401
 from tools import auth, api_tools, register_openapi, this  # pylint: disable=E0401
 from tools import context  # pylint: disable=E0401
 
+from ...utils.scim.guards import refusal as scim_refusal
 from ...utils import project_data_delete as pdd
 from .project_backup import PROJECT_DOWNLOAD_PERMISSION, PROMPT_LIB_MODE
 from .project_restore import _is_own_personal_project
@@ -215,6 +216,9 @@ class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         _ = kwargs
         if not _authorized(project_id):
             return _denied()
+        refusal = scim_refusal(self.module, project_id)
+        if refusal:
+            return refusal
         #
         try:
             types = pdd.parse_types(flask.request.get_json(silent=True))

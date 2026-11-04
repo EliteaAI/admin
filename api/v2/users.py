@@ -33,6 +33,13 @@ from ...utils import validate_role_assignment, get_role_validation_error
 
 
 LIMIT_ERROR = "limit must be a whole number from 1 to 100"
+
+
+def _scim_refusal(module, project_id, allowed=None):
+    """ utils.scim.guards.refusal; read through the module so this file needs no SCIM import (#5202) """
+    scim = getattr(module, "scim", None)
+    return scim.guards.refusal(project_id, allowed) if scim is not None else None
+
 OFFSET_ERROR = "offset must be a whole number, 0 or more"
 
 
@@ -124,6 +131,7 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
         return {
             "total": total,
             "rows": result,
+            "scim_managed": _scim_refusal(self.module, project_id) is not None,
         }, 200
 
     @register_openapi(
@@ -144,6 +152,12 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
     def post(self, project_id: int, **kwargs):
         user_emails = request.json["emails"]
         user_roles = request.json["roles"]
+        # SCIM projects: members come from the IdP; ELITEA (administration) admins may still add project admins
+        admin_grant = kwargs.get('mode') == 'administration' and list(user_roles) == ['admin']
+        refusal = _scim_refusal(
+            self.module, project_id, allowed=lambda g: admin_grant and g.can_add_admin(project_id, user_roles))
+        if refusal:
+            return refusal
 
         is_valid, invalid_roles = validate_role_assignment(user_roles)
         if not is_valid:
@@ -157,7 +171,7 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
                 results.append({'msg': e.errors()[0]["msg"], 'status': 'error'})
                 continue
             result = self.module.context.rpc_manager.call.add_user_to_project_or_create(
-                user_email, project_id, user_roles)
+                user_email, project_id, user_roles, admin_grant=admin_grant)
             results.append(result)
         added_ids = {r['id'] for r in results if r.get('status') == 'ok'}
         has_errors = any(r.get('status') == 'error' for r in results)
@@ -196,6 +210,10 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
         if not is_valid:
             return get_role_validation_error(invalid_roles)
 
+        refusal = _scim_refusal(self.module, project_id, allowed=lambda g: g.can_set_roles(
+            project_id, user_ids, new_user_roles, auth.list_project_users(project_id)))
+        if refusal:
+            return refusal
         result = self.module.context.rpc_manager.call.update_roles_for_user(
             project_id, user_ids, new_user_roles)
         return {'msg': f'roles updated' if result else 'something is wrong'}, 200
@@ -222,6 +240,9 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
             delete_ids = list(map(int, request.args["id[]"].split(',')))
         except TypeError:
             return 'IDs must be integers', 400
+        refusal = _scim_refusal(self.module, project_id)
+        if refusal:
+            return refusal
         # remove_users_from_project fires user_removed_from_project itself.
         self.module.remove_users_from_project(project_id, delete_ids)
         return {'msg': 'users successfully removed'}, 204

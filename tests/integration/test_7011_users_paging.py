@@ -206,7 +206,7 @@ def test_el7011_r2_1_query_matches_name_or_email_ignoring_case(make_env):
 
 
 def test_el7011_r2_2_query_without_match_returns_200_and_empty_list(env):
-    assert env.get(limit=20, offset=0, query="zzzz-no-user") == ({"total": 0, "rows": []}, 200)
+    assert env.get(limit=20, offset=0, query="zzzz-no-user") == ({"total": 0, "rows": [], "scim_managed": False}, 200)
 
 
 @pytest.mark.parametrize("query", ["", "   ", "\t"])
@@ -247,7 +247,7 @@ def test_el7274_role_is_not_matched_unless_asked(make_env):
     users[4]["roles"] = ["editor"]
     env = make_env(users)
 
-    assert env.get(limit=20, offset=0, query="EDITOR") == ({"total": 0, "rows": []}, 200)
+    assert env.get(limit=20, offset=0, query="EDITOR") == ({"total": 0, "rows": [], "scim_managed": False}, 200)
 
 
 @pytest.mark.parametrize("limit,count", [(1, 1), (100, 45)])
@@ -282,7 +282,7 @@ def test_el7011_r2_3_system_user_and_outsiders_never_listed(env):
 
 @pytest.mark.parametrize("query", ["project_P_system", "Outsider"])
 def test_el7011_r2_3_query_cannot_reach_non_members(env, query):
-    assert env.get(limit=20, offset=0, query=query) == ({"total": 0, "rows": []}, 200)
+    assert env.get(limit=20, offset=0, query=query) == ({"total": 0, "rows": [], "scim_managed": False}, 200)
 
 
 def test_el7011_r2_3_view_permission_is_required(env):
