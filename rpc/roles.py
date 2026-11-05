@@ -221,6 +221,15 @@ class RPC:
                 return []
         return auth.check_user_in_projects(project_ids, user_id)
 
+    @web.rpc('admin_list_user_project_ids', 'list_user_project_ids')
+    def list_user_project_ids(self, user_id: Optional[int] = None, **kwargs) -> list[int]:
+        if not user_id:
+            try:
+                user_id = int(g.auth.id)
+            except (AttributeError, TypeError, ValueError):
+                return []
+        return auth.list_user_project_ids(user_id)
+
     @web.rpc('admin_get_user_private_project', 'get_user_private_project')
     def get_user_private_project(self, user_id: int, **kwargs) -> Optional[dict]:
         from plugins.projects.models.project import Project
