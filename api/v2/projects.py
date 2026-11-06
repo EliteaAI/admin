@@ -77,7 +77,7 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903,C0115
         # Enrich only the current page with admin names
         #
         scim = getattr(self.module, "scim", None)
-        scim_ids = scim.guards.protected_ids() if scim is not None else frozenset()
+        scim_ids = scim.guards.linked_ids() if scim is not None else frozenset()
         for project in rows:
             project["scim_managed"] = project["id"] in scim_ids
             project_users = self.module.get_users_roles_in_project(

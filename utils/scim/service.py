@@ -131,12 +131,12 @@ class ScimService:
             resource["emails"] = [{"value": row.email, "type": "work", "primary": True}]
         return resource
 
-    def _apply_user(self, row, resource):
+    def _apply_user(self, row, resource, session):
         user_name = resource.get("userName")
         if not user_name or not isinstance(user_name, str):
             raise ScimError(400, "userName is required", "invalidValue")
         row.user_name = user_name[:256]
-        row.external_id = (resource.get("externalId") or None) and str(resource["externalId"])[:256]
+        self._set_external_id(session, row, resource.get("externalId"))
         row.display_name = (resource.get("displayName") or None) and str(resource["displayName"])[:256]
         if "active" in resource:
             row.active = protocol.bool_value(resource["active"])
@@ -168,12 +168,26 @@ class ScimService:
             query = query.where(ScimUser.id != exclude_id)
         return session.scalars(query).first() is not None
 
+    @staticmethod
+    def _set_external_id(session, row, value):
+        """ The IdP object id identifies a user or group (#5202): one live row per externalId """
+        external_id = (value or None) and str(value)[:256]
+        if external_id and external_id != row.external_id:
+            model = type(row)
+            alive = model.deleted.is_(False) if model is ScimUser else model.status != GROUP_REMOVED
+            query = select(model.id).where(model.external_id == external_id, alive)
+            if row.id:
+                query = query.where(model.id != row.id)
+            if session.scalars(query).first() is not None:
+                raise ScimError(409, "externalId already exists", "uniqueness")
+        row.external_id = external_id
+
     def create_user(self, resource):
         with self.get_session() as session:
             if self._user_name_taken(session, str(resource.get("userName") or "")):
                 raise ScimError(409, "userName already exists", "uniqueness")
             row = ScimUser(active=True, created_at=now(), updated_at=now())
-            self._apply_user(row, resource)
+            self._apply_user(row, resource, session)
             session.add(row)
             session.commit()
             result = self._user_resource(row)
@@ -183,6 +197,14 @@ class ScimService:
     def get_user(self, user_id):
         with self.get_session() as session:
             return self._user_resource(self._get_user_row(session, user_id))
+
+    def provisioned_user_ids(self, elitea_user_ids) -> set:
+        """ Which of these ELITEA accounts are linked to a live SCIM user """
+        if not elitea_user_ids:
+            return set()
+        with self.get_session() as session:
+            return set(session.scalars(select(ScimUser.elitea_user_id).where(
+                ScimUser.elitea_user_id.in_(list(elitea_user_ids)), ScimUser.deleted.is_(False))))
 
     def user_link(self, user_id):
         with self.get_session() as session:
@@ -204,7 +226,7 @@ class ScimService:
             row = self._get_user_row(session, user_id)
             if self._user_name_taken(session, str(resource.get("userName") or ""), exclude_id=user_id):
                 raise ScimError(409, "userName already exists", "uniqueness")
-            self._apply_user(row, resource)
+            self._apply_user(row, resource, session)
             row.updated_at = now()
             session.commit()
             result = self._user_resource(row)
@@ -222,7 +244,7 @@ class ScimService:
                 updates = value if (not path and isinstance(value, dict)) else {path: value}
                 for key, item in updates.items():
                     self._patch_user_attribute(resource, op, key or "", item)
-            self._apply_user(row, resource)
+            self._apply_user(row, resource, session)
             row.updated_at = now()
             session.commit()
             result = self._user_resource(row)
@@ -338,7 +360,7 @@ class ScimService:
             row = ScimGroup(status=GROUP_PENDING, dirty=True, created_at=now(), updated_at=now(),
                             last_activity_at=now())
             self._set_name(session, row, resource.get("displayName"))
-            row.external_id = (resource.get("externalId") or None) and str(resource["externalId"])[:256]
+            self._set_external_id(session, row, resource.get("externalId"))
             session.add(row)
             try:
                 session.flush()
@@ -374,7 +396,7 @@ class ScimService:
         with self.get_session() as session:
             row = self._get_group_row(session, group_id)
             self._set_name(session, row, resource.get("displayName"))
-            row.external_id = (resource.get("externalId") or None) and str(resource["externalId"])[:256]
+            self._set_external_id(session, row, resource.get("externalId"))
             self._remove_members(session, group_id, None)
             self._add_members(session, group_id, resource.get("members"))
             row.updated_at = row.last_activity_at = now()
@@ -397,7 +419,7 @@ class ScimService:
                         self._set_name(session, row, value["displayName"])
                         changed = True
                     if "externalId" in value:
-                        row.external_id = value["externalId"] and str(value["externalId"])[:256]
+                        self._set_external_id(session, row, value["externalId"])
                     if "members" in value:
                         if op == "replace":
                             self._remove_members(session, group_id, None)
@@ -406,7 +428,7 @@ class ScimService:
                     self._set_name(session, row, value)
                     changed = True
                 elif lowered == "externalid":
-                    row.external_id = value and str(value)[:256]
+                    self._set_external_id(session, row, value)
                 elif lowered == "members":
                     if op == "remove":
                         ids = None if value is None else [m.get("value") for m in value if isinstance(m, dict)]

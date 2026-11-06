@@ -1,10 +1,10 @@
-""" Protection of SCIM-managed projects (#5202): only member roles may be changed by people """
+""" Protection of members synced from SCIM groups (#5202): a project linked to a SCIM group is a normal
+project, only the members the sync added may not be removed by people (or left without roles) """
 import time
 
 
 CACHE_TTL_S = 10   # fallback: changes are also announced to every replica (admin_scim_projects_changed)
-MANAGED_MESSAGE = "This project is managed by SCIM: only member roles can be changed and admins added."
-ADMIN_ROLE = "admin"
+SYNCED_MESSAGE = "These members are synced from the identity provider: remove them from the group there."
 
 
 class Guards:
@@ -13,7 +13,8 @@ class Guards:
         self.ttl = ttl
         self._cache = (0.0, frozenset())
 
-    def protected_ids(self) -> frozenset:
+    def linked_ids(self) -> frozenset:
+        """ ids of the projects linked to a SCIM group """
         loaded_at, ids = self._cache
         if self.ttl and time.monotonic() - loaded_at < self.ttl:
             return ids
@@ -27,43 +28,38 @@ class Guards:
     def invalidate(self):
         self._cache = (0.0, frozenset())
 
-    def is_protected(self, project_id) -> bool:
-        return project_id in self.protected_ids()
+    def is_linked(self, project_id) -> bool:
+        return project_id in self.linked_ids()
 
-    def can_change_project(self, project_id) -> bool:
-        """ rename, delete, suspend, restore, data delete """
-        return not self.is_protected(project_id)
+    def synced_user_ids(self, project_id) -> frozenset:
+        """ ELITEA user ids the SCIM sync added to the project """
+        if not self.is_linked(project_id):
+            return frozenset()
+        from sqlalchemy import select  # pylint: disable=C0415
+        from ...models.scim import ScimMembershipGrant  # pylint: disable=C0415
+        with self.get_session() as session:
+            return frozenset(session.scalars(select(ScimMembershipGrant.user_id).where(
+                ScimMembershipGrant.project_id == project_id)))
 
-    def can_change_membership(self, project_id) -> bool:
-        """ add or remove members """
-        return not self.is_protected(project_id)
-
-    def can_add_admin(self, project_id, roles) -> bool:
-        """ ELITEA admins may add project admins (role admin only) to a SCIM project """
-        return not self.is_protected(project_id) or list(roles) == [ADMIN_ROLE]
-
-    def refusal(self, project_id, allowed=None):
-        """ The API's 403 while the project is managed by SCIM, else None.
-            ``allowed(guards)`` -> True lets this particular change through (roles, admin grant). """
-        if not self.is_protected(project_id) or (allowed is not None and allowed(self)):
+    def refusal(self, project_id, user_ids, roles=None):
+        """ The API's 403 when a change would remove synced members, else None. ``roles`` None: the users
+            are removed; a list: their roles are set to it (an empty list removes them too) """
+        if roles:
             return None
-        return {"error": MANAGED_MESSAGE, "scim_managed": True}, 403
-
-    def can_set_roles(self, project_id, user_ids, roles, member_ids) -> bool:
-        """ roles of existing members to a non-empty set: an empty set removes, a non-member would be added """
-        if not self.is_protected(project_id):
-            return True
-        return bool(roles) and set(user_ids) <= set(member_ids)
+        synced = sorted(set(user_ids) & self.synced_user_ids(project_id))
+        if not synced:
+            return None
+        return {"error": SYNCED_MESSAGE, "scim_synced": synced}, 403
 
 
 class ScimManagedError(PermissionError):
-    """ A change to a SCIM-managed project that people may not make """
+    """ A manual change that would remove members synced from the IdP """
 
     def __init__(self):
-        super().__init__(MANAGED_MESSAGE)
+        super().__init__(SYNCED_MESSAGE)
 
 
-def refusal(module, project_id, allowed=None):
+def refusal(module, project_id, user_ids, roles=None):
     """ Guards.refusal of the module's SCIM runtime; None when SCIM provisioning is off """
     scim = getattr(module, "scim", None)
-    return scim.guards.refusal(project_id, allowed) if scim is not None else None
+    return scim.guards.refusal(project_id, user_ids, roles) if scim is not None else None

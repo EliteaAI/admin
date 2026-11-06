@@ -52,9 +52,13 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
             sort_order=flask.request.args.get("sort_order", "asc", type=str),
         )
         #
+        scim = getattr(self.module, "scim", None)
+        provisioned = scim.service.provisioned_user_ids([u["id"] for u in result["rows"]]) \
+            if scim is not None else set()
         for user in result["rows"]:
             if user["last_login"]:
                 user["last_login"] = user["last_login"].isoformat(timespec="seconds")
+            user["scim_provisioned"] = user["id"] in provisioned
         #
         return result
 

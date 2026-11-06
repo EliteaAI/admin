@@ -1,5 +1,5 @@
-"""#5202 (AC-12, AC-13): the membership RPCs refuse changes to SCIM-managed projects, except the SCIM sync's own
-calls and role changes of existing members to a non-empty set."""
+"""#5202 (AC-12, AC-13): the membership RPCs refuse removing members synced from SCIM (or setting their
+roles to none), except the SCIM sync's own calls and user-deletion cleanup. Everything else is allowed."""
 import importlib.util
 import pathlib
 import sys
@@ -40,17 +40,13 @@ class FakeAuth:
 
 
 class FakeGuards:
-    def is_protected(self, project_id):
-        return project_id == PROTECTED
+    synced = {(PROTECTED, 5)}
 
-    def can_change_membership(self, project_id):
-        return not self.is_protected(project_id)
-
-    def can_add_admin(self, project_id, roles):
-        return not self.is_protected(project_id) or list(roles) == ["admin"]
-
-    def can_set_roles(self, project_id, user_ids, roles, member_ids):
-        return not self.is_protected(project_id) or (bool(roles) and set(user_ids) <= set(member_ids))
+    def refusal(self, project_id, user_ids, roles=None):
+        if roles:
+            return None
+        hit = [u for u in user_ids if (project_id, u) in self.synced]
+        return ({"error": "synced", "scim_synced": hit}, 403) if hit else None
 
 
 @pytest.fixture
@@ -76,7 +72,7 @@ def rpc(monkeypatch):
         package.__path__ = [str(path)]
         monkeypatch.setitem(sys.modules, name, package)
     guards_stub = types.ModuleType("fakeadmin5202.utils.scim.guards")
-    guards_stub.MANAGED_MESSAGE = "managed by SCIM"
+    guards_stub.SYNCED_MESSAGE = "synced"
     guards_stub.ScimManagedError = type("ScimManagedError", (PermissionError,), {"__init__": lambda self: None})
     monkeypatch.setitem(sys.modules, "fakeadmin5202.utils.scim.guards", guards_stub)
     spec = importlib.util.spec_from_file_location("fakeadmin5202.rpc.roles", PLUGIN_ROOT / "rpc" / "roles.py")
@@ -95,54 +91,44 @@ def rpc(monkeypatch):
     return instance, fake_auth
 
 
-def test_add_member_to_protected_project_is_refused(rpc):
+def test_manual_add_to_linked_project_is_allowed(rpc):
     instance, fake_auth = rpc
-    with pytest.raises(PermissionError):
-        instance.add_user_to_project(PROTECTED, 9, ["viewer"])
-    assert (PROTECTED, 9) not in fake_auth.roles
+    instance.add_user_to_project(PROTECTED, 9, ["viewer"])
+    assert fake_auth.roles[(PROTECTED, 9)] == {1}
 
 
-def test_remove_member_from_protected_project_is_refused(rpc):
+def test_removing_a_synced_member_is_refused(rpc):
     instance, fake_auth = rpc
     with pytest.raises(PermissionError):
         instance.remove_users_from_project(PROTECTED, [5])
     assert (PROTECTED, 5) in fake_auth.roles
 
 
-def test_platform_admin_may_add_project_admin(rpc):
+def test_removing_a_manual_member_is_allowed(rpc):
     instance, fake_auth = rpc
-    instance.add_user_to_project(PROTECTED, 9, ["admin"], admin_grant=True)
-    assert fake_auth.roles[(PROTECTED, 9)] == {3}
-
-
-@pytest.mark.parametrize("roles", [["viewer"], ["editor"], ["admin", "editor"]])
-def test_admin_grant_only_allows_the_admin_role(rpc, roles):
-    instance, fake_auth = rpc
-    with pytest.raises(PermissionError):
-        instance.add_user_to_project(PROTECTED, 9, roles, admin_grant=True)
+    instance.add_user_to_project(PROTECTED, 9, ["viewer"])
+    instance.remove_users_from_project(PROTECTED, [9])
     assert (PROTECTED, 9) not in fake_auth.roles
 
 
-def test_scim_sync_may_add_and_remove(rpc):
+@pytest.mark.parametrize("flag", ["scim_sync", "system_cleanup"])
+def test_sync_and_user_cleanup_may_remove_synced_members(rpc, flag):
     instance, fake_auth = rpc
-    instance.add_user_to_project(PROTECTED, 9, ["viewer"], scim_sync=True)
-    assert fake_auth.roles[(PROTECTED, 9)] == {1}
-    instance.remove_users_from_project(PROTECTED, [9], scim_sync=True)
-    assert (PROTECTED, 9) not in fake_auth.roles
+    instance.remove_users_from_project(PROTECTED, [5], **{flag: True})
+    assert (PROTECTED, 5) not in fake_auth.roles
 
 
-def test_role_change_of_existing_member_is_allowed(rpc):
+def test_role_change_of_synced_member_is_allowed(rpc):
     instance, fake_auth = rpc
     instance.update_roles_for_user(PROTECTED, [5], ["editor", "admin"])
     assert fake_auth.roles[(PROTECTED, 5)] == {2, 3}
 
 
-@pytest.mark.parametrize("user_ids, roles", [([5], []), ([9], ["viewer"]), ([5, 9], ["editor"])])
-def test_role_change_that_removes_or_adds_is_refused(rpc, user_ids, roles):
+def test_clearing_roles_of_synced_member_is_refused(rpc):
     instance, fake_auth = rpc
     with pytest.raises(PermissionError):
-        instance.update_roles_for_user(PROTECTED, user_ids, roles)
-    assert fake_auth.roles[(PROTECTED, 5)] == {1} and (PROTECTED, 9) not in fake_auth.roles
+        instance.update_roles_for_user(PROTECTED, [5], [])
+    assert fake_auth.roles[(PROTECTED, 5)] == {1}
 
 
 def test_normal_projects_are_unaffected(rpc):
@@ -156,5 +142,5 @@ def test_normal_projects_are_unaffected(rpc):
 def test_without_scim_runtime_nothing_is_guarded(rpc):
     instance, fake_auth = rpc
     instance.scim = None
-    instance.add_user_to_project(PROTECTED, 9, ["viewer"])
-    assert (PROTECTED, 9) in fake_auth.roles
+    instance.remove_users_from_project(PROTECTED, [5])
+    assert (PROTECTED, 5) not in fake_auth.roles

@@ -1,16 +1,20 @@
-""" Every SCIM group is a protected team project (#5202).
+""" Every SCIM group is linked to a team project (#5202).
 
 ``sync_all`` makes the platform match the SCIM tables:
-- a group without a project gets one (name from protocol.project_name_for), registered as protected;
-- a renamed group renames its project; a removed group suspends its project and unprotects it;
+- a group without a project is linked to the one active team project with its name (protocol.project_name_for,
+  case-insensitive, not linked to another group), or gets a new project with that name; several such projects
+  are an error until an admin renames them. The link is kept by id: the project name belongs to ELITEA;
+- a removed group removes the members SCIM added, suspends the project and unlinks it; ``unlink`` does the
+  same but leaves the project active;
+  a linked project that was deleted is unlinked and the group is mapped again;
 - each project's SCIM members are the group's effective members (direct members plus those of nested
   groups, from ``admin_scim_group_edge``): missing ones are added as viewer, ones SCIM granted that left
-  are removed. Members SCIM did not add (system user, ...) are never touched;
+  are removed. Members SCIM did not add (manual members, system user, ...) are never touched;
 - users deactivated or deleted in the IdP are suspended, and unsuspended again only if SCIM suspended them.
   Platform admins and system users are never suspended by SCIM (a SCIM token must not lock out an admin).
 
 ``platform`` gives: find_user, ensure_user(email), set_user_suspended, is_user_suspended, is_protected_account,
-project_name(project_id), create_project(name), rename_project, set_project_suspended,
+project_name(project_id), find_projects_by_name(name), create_project(name), set_project_suspended,
 project_user_ids, add_member(project_id, user_id, role), remove_member, clear_user_projects_cache(user_ids),
 record_audit. No DB session is held while these run.
 """
@@ -137,8 +141,8 @@ class ProjectSync:
         """ One pass. Only groups marked dirty unless ``full`` (schedule, Sync now). Serialized within the
             process by a lock and across pylon replicas by ``lock`` (a Postgres advisory lock in production):
             a replica that does not get it skips the pass, the holder will see the same dirty groups. """
-        result = {"created": 0, "renamed": 0, "suspended": 0, "added": 0, "removed": 0, "errors": 0,
-                  "skipped": False}
+        result = {"created": 0, "linked": 0, "unlinked": 0, "suspended": 0, "added": 0, "removed": 0,
+                  "errors": 0, "skipped": False}
         with self._lock:
             with self.lock() as acquired:
                 if not acquired:
@@ -148,7 +152,7 @@ class ProjectSync:
                 self._sync_projects(groups, result)
                 self._sync_members(groups, result)
                 self._clear_dirty(groups)
-        if result["created"] or result["suspended"]:
+        if result["created"] or result["linked"] or result["unlinked"] or result["suspended"]:
             try:
                 self.on_projects_changed()
             except Exception:  # pylint: disable=W0703
@@ -177,7 +181,8 @@ class ProjectSync:
     def _clear_dirty(self, group_ids):
         """ Clear the flag of groups that synced cleanly; groups that failed stay dirty for the next pass """
         with self.get_session() as session:
-            session.query(ScimGroup).filter(ScimGroup.id.in_(group_ids), ScimGroup.status != GROUP_ERROR).update(
+            session.query(ScimGroup).filter(ScimGroup.id.in_(group_ids), ScimGroup.status != GROUP_ERROR,
+                                            ScimGroup.error.is_(None)).update(
                 {ScimGroup.dirty: False}, synchronize_session=False)
             session.commit()
 
@@ -217,13 +222,21 @@ class ProjectSync:
             try:
                 if group.status == GROUP_REMOVED:
                     self._retire(group, result)
-                elif group.project_id is None:
-                    self._create(group, result)
-                else:
-                    self._rename(group, result)
+                    continue
+                project_id = group.project_id
+                if project_id is not None and self.platform.project_name(project_id) is None:
+                    self._unlink_deleted(group, result)
+                    project_id = None
+                if project_id is None:
+                    self._link_or_create(group, result)
+                elif group.status == GROUP_ERROR:
+                    self._update_group(group.id, status=GROUP_ACTIVE, error=None)
             except Exception as exc:  # pylint: disable=W0703
                 log.exception("SCIM: project of group %s failed", group.id)
-                self._update_group(group.id, status=GROUP_ERROR, error=str(exc)[:500])
+                if group.status == GROUP_REMOVED:   # stays removed (and dirty): the release is retried
+                    self._update_group(group.id, error=str(exc)[:500], dirty=True)
+                else:
+                    self._update_group(group.id, status=GROUP_ERROR, error=str(exc)[:500])
                 result["errors"] += 1
 
     def _update_group(self, group_id, **values):
@@ -232,50 +245,117 @@ class ProjectSync:
                 {getattr(ScimGroup, k): v for k, v in values.items()}, synchronize_session=False)
             session.commit()
 
-    def _create(self, group, result):
+    def _linked_project_ids(self):
+        with self.get_session() as session:
+            return set(session.scalars(select(ScimGroup.project_id).where(ScimGroup.project_id.is_not(None))))
+
+    def _link_or_create(self, group, result):
         with self.get_session() as session:
             if session.scalar(select(ScimGroup.project_id).where(ScimGroup.id == group.id)) is not None:
-                return   # another replica created it after this pass read the group
+                return   # another replica linked it after this pass read the group
         name = protocol.project_name_for(group.display_name)
-        project_id = self.platform.create_project(name)
-        if not project_id:
-            raise RuntimeError("The project could not be created")
+        linked = self._linked_project_ids()
+        matches = [pid for pid in self.platform.find_projects_by_name(name) if pid not in linked]
+        if len(matches) > 1:
+            self._update_group(group.id, status=GROUP_ERROR,
+                               error=f"{len(matches)} projects named {name}: rename all but one in ELITEA")
+            result["errors"] += 1
+            return
+        if matches:
+            project_id, code = matches[0], "SCIM_PROJECT_LINKED"
+        else:
+            project_id, code = self.platform.create_project(name), "SCIM_PROJECT_CREATED"
+            if not project_id:
+                raise RuntimeError("The project could not be created")
         with self.get_session() as session:
             row = session.get(ScimGroup, group.id)
             row.project_id, row.status, row.error = project_id, GROUP_ACTIVE, None
             session.merge(ScimProject(project_id=project_id, group_id=group.id, protected=True, created_at=_now()))
             session.commit()
-        result["created"] += 1
-        self._audit("SCIM_PROJECT_CREATED", f"scim_group:{group.id};name:{name}", project_id=project_id)
-
-    def _rename(self, group, result):
-        if group.status == GROUP_ERROR:
-            self._update_group(group.id, status=GROUP_ACTIVE, error=None)
-        current = self._project_name(group.project_id)
-        wanted = protocol.project_name_for(group.display_name)
-        if current is not None and wanted != current:
-            self.platform.rename_project(group.project_id, wanted)
-            result["renamed"] += 1
-            self._audit("SCIM_PROJECT_RENAMED", f"scim_group:{group.id};name:{wanted}", project_id=group.project_id)
+        result["linked" if matches else "created"] += 1
+        self._audit(code, f"scim_group:{group.id};name:{name}", project_id=project_id)
 
     def _project_name(self, project_id):
         return self.platform.project_name(project_id)
 
+    def _release(self, group_id, project_id, result, suspend=True):
+        """ Remove the members SCIM added, suspend the project and drop the link """
+        with self.get_session() as session:
+            granted = sorted(set(session.scalars(select(ScimMembershipGrant.user_id).where(
+                ScimMembershipGrant.group_id == group_id, ScimMembershipGrant.project_id == project_id))))
+        removed = []
+        for user_id in granted:
+            try:
+                self.platform.remove_member(project_id, user_id)
+            except Exception:  # pylint: disable=W0703
+                log.exception("SCIM: removing %s from project %s failed", user_id, project_id)
+                result["errors"] += 1
+                continue
+            removed.append(user_id)
+            result["removed"] += 1
+            self._audit("SCIM_MEMBER_REMOVED", f"user:{user_id}", project_id=project_id)
+        if len(removed) < len(granted):
+            raise RuntimeError("Some synced members could not be removed")
+        if suspend:
+            self.platform.set_project_suspended(project_id, True)
+            result["suspended"] += 1
+        with self.get_session() as session:
+            session.query(ScimProject).filter(ScimProject.project_id == project_id).update(
+                {ScimProject.protected: False}, synchronize_session=False)
+            session.query(ScimMembershipGrant).filter(ScimMembershipGrant.group_id == group_id).delete()
+            session.query(ScimGroup).filter(ScimGroup.id == group_id).update(
+                {ScimGroup.project_id: None, ScimGroup.error: None}, synchronize_session=False)
+            session.commit()
+        if removed:
+            try:
+                self.platform.clear_user_projects_cache(removed)
+            except Exception:  # pylint: disable=W0703
+                log.warning("SCIM: project caches of %s were not cleared", removed)
+
     def _retire(self, group, result):
         if group.project_id is None:
             return
-        with self.get_session() as session:
-            registry = session.get(ScimProject, group.project_id)
-            if registry is None or not registry.protected:
-                return
-        self.platform.set_project_suspended(group.project_id, True)
-        with self.get_session() as session:
-            session.query(ScimProject).filter(ScimProject.project_id == group.project_id).update(
-                {ScimProject.protected: False}, synchronize_session=False)
-            session.query(ScimMembershipGrant).filter(ScimMembershipGrant.group_id == group.id).delete()
-            session.commit()
-        result["suspended"] += 1
+        if self.platform.project_name(group.project_id) is None:   # deleted in ELITEA meanwhile
+            self._unlink_deleted(group, result, status=GROUP_REMOVED)
+            return
+        self._release(group.id, group.project_id, result)
         self._audit("SCIM_PROJECT_SUSPENDED", f"scim_group:{group.id}", project_id=group.project_id)
+
+    def _unlink_deleted(self, group, result, status=GROUP_PENDING):
+        """ The linked project was deleted in ELITEA: forget it, the group is mapped again """
+        with self.get_session() as session:
+            session.query(ScimProject).filter(ScimProject.project_id == group.project_id).delete()
+            session.query(ScimMembershipGrant).filter(ScimMembershipGrant.project_id == group.project_id).delete()
+            session.query(ScimGroup).filter(ScimGroup.id == group.id).update(
+                {ScimGroup.project_id: None, ScimGroup.status: status, ScimGroup.error: None},
+                synchronize_session=False)
+            session.commit()
+        result["unlinked"] += 1
+        self._audit("SCIM_PROJECT_UNLINKED", f"scim_group:{group.id};reason:deleted", project_id=group.project_id)
+
+    def unlink(self, group_id) -> bool:
+        """ Admin action: remove the members SCIM added and drop the link; the project stays active (manual
+            members and data kept) and the next pass maps the group again by name, to this project if it still
+            has the group's name. Raises RuntimeError while another replica is syncing. """
+        result = {"removed": 0, "suspended": 0, "errors": 0}
+        with self._lock:
+            with self.lock() as acquired:
+                if not acquired:
+                    raise RuntimeError("A sync is running; try again in a minute")
+                with self.get_session() as session:
+                    group = session.get(ScimGroup, group_id)
+                    if group is None or group.status == GROUP_REMOVED:
+                        return False
+                    project_id = group.project_id
+                if project_id is not None:
+                    self._release(group_id, project_id, result, suspend=False)
+                self._update_group(group_id, status=GROUP_PENDING, error=None, dirty=True)
+        self._audit("SCIM_PROJECT_UNLINKED", f"scim_group:{group_id};reason:admin", project_id=project_id)
+        try:
+            self.on_projects_changed()
+        except Exception:  # pylint: disable=W0703
+            log.exception("SCIM: project change was not announced")
+        return True
 
     def _sync_members(self, group_ids, result):
         """ Diff each picked group's project against its effective members; reads only the rows involved """
