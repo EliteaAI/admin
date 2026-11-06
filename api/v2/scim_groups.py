@@ -1,7 +1,8 @@
 """ Provisioned SCIM groups and their projects (#5202). Platform admins only.
 
 GET                    groups: status, project, direct/effective members, nesting, last activity
-POST   <group_id>/sync re-run project creation and the membership sync now
+POST   <group_id>/sync   re-run project linking and the membership sync now
+POST   <group_id>/unlink remove the synced members, suspend the project; the group is mapped again by name
 """
 from tools import auth, api_tools, this, register_openapi  # pylint: disable=E0401
 
@@ -26,17 +27,24 @@ class AdminAPI(api_tools.APIModeHandler):
             return (row, 200) if row else ({"error": "Group not found"}, 404)
         return {"total": len(rows), "rows": rows, "graph": scim.sync.graph_status()}, 200
 
-    @register_openapi(name="Sync SCIM group", description="POST <group_id>/sync: sync projects and members now.")
+    @register_openapi(name="Sync or unlink SCIM group",
+                      description="POST <group_id>/sync: sync projects and members now; <group_id>/unlink: "
+                                  "release the group's project so the group is mapped again by name.")
     @auth.decorators.check_api(_PERMISSION)
     def post(self, group_id: str, action: str = None, **kwargs):
         scim = _scim()
         if scim is None:
             return {"error": "SCIM provisioning is not enabled"}, 404
-        if action != "sync":
+        if action not in ("sync", "unlink"):
             return {"error": "Unknown action"}, 404
         if not any(r["id"] == group_id for r in scim.sync.overview()):
             return {"error": "Group not found"}, 404
-        scim.request_sync(graph_pull=True, full=True)
+        if action == "unlink":
+            try:
+                scim.sync.unlink(group_id)
+            except Exception as exc:  # pylint: disable=W0703
+                return {"error": f"The group could not be unlinked: {exc}"}, 409
+        scim.request_sync(graph_pull=action == "sync", full=True)
         return {"scheduled": True}, 202
 
 

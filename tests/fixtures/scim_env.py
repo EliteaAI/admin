@@ -146,6 +146,16 @@ class FakePlatform:
         self.projects[project_id] = {"id": project_id, "name": name, "suspended": False}
         return project_id
 
+    def find_projects_by_name(self, name):
+        """ team projects (not personal, not suspended) whose name equals ``name`` case-insensitively """
+        return sorted(pid for pid, p in self.projects.items()
+                      if p["name"].lower() == name.lower() and not p["suspended"]
+                      and not p["name"].startswith("project_user_"))
+
+    def delete_project(self, project_id):
+        self.projects.pop(project_id, None)
+        self.members.pop(project_id, None)
+
     def rename_project(self, project_id, name):
         self.projects[project_id]["name"] = name
 
