@@ -1,4 +1,4 @@
-"""Integration tests for #5202 (iteration 2) - every SCIM group is a protected ELITEA project.
+"""Integration tests for #5202 (iteration 3) - every SCIM group is linked to an ELITEA project by name.
 
 utils/scim/service.py (Users, Groups, tokens), utils/scim/projects.py (project lifecycle, membership sync,
 nesting) and utils/scim/guards.py on SQLite; the platform is the in-memory FakePlatform.
@@ -135,13 +135,55 @@ def test_any_group_name_is_accepted_and_gets_a_project(env):
     summary = env.svc.group_summary(group["id"])
     assert summary["status"] == "active" and summary["project_id"]
     assert env.platform.projects[summary["project_id"]]["name"] == "Finance"
-    assert env.guards.is_protected(summary["project_id"]) is True
+    assert env.guards.is_linked(summary["project_id"]) is True
 
 
-def test_project_name_is_the_group_name_without_suffix(env):
-    group = env.svc.create_group(group_body("Taken", external_id="67a0834e"))
+@pytest.mark.parametrize("group_name", ["Taken", "TAKEN", "  taken "])
+def test_group_links_to_existing_project_with_the_same_name(env, group_name):
+    group = env.svc.create_group(group_body(group_name, external_id="67a0834e"))
     env.run()
-    assert env.platform.projects[env.project_of(group["id"])]["name"] == "Taken"
+    assert env.project_of(group["id"]) == 1
+    assert env.platform.projects == {1: env.platform.projects[1]}   # nothing created
+    assert env.guards.is_linked(1) is True
+    assert "SCIM_PROJECT_LINKED" in {e["reason_code"] for e in env.platform.audit}
+
+
+def test_several_projects_with_the_name_is_an_error_until_renamed(env):
+    env.platform.projects[2] = {"id": 2, "name": "taken", "suspended": False}
+    group = env.svc.create_group(group_body("Taken"))
+    env.run()
+    summary = env.svc.group_summary(group["id"])
+    assert summary["status"] == "error" and summary["project_id"] is None and "2 projects" in summary["error"]
+    assert set(env.platform.projects) == {1, 2}
+    env.platform.rename_project(2, "Taken (old)")
+    env.run()
+    assert env.project_of(group["id"]) == 1
+
+
+def test_suspended_project_is_not_matched(env):
+    env.platform.set_project_suspended(1, True)
+    group = env.svc.create_group(group_body("Taken"))
+    env.run()
+    assert env.project_of(group["id"]) not in (None, 1)
+
+
+def test_project_linked_to_another_group_is_not_matched(env):
+    alpha = env.svc.create_group(group_body("Alpha"))
+    env.run()
+    alpha_project = env.project_of(alpha["id"])
+    env.platform.rename_project(alpha_project, "Beta")
+    beta = env.svc.create_group(group_body("Beta"))
+    env.run()
+    assert env.project_of(beta["id"]) not in (None, alpha_project)
+    assert env.project_of(alpha["id"]) == alpha_project
+
+
+def test_personal_project_is_never_matched(env):
+    env.platform.projects[2] = {"id": 2, "name": "project_user_9", "suspended": False}
+    group = env.svc.create_group(group_body("project_user_9"))
+    env.run()
+    project_id = env.project_of(group["id"])
+    assert project_id not in (None, 2) and env.platform.projects[project_id]["name"] == "group-project_user_9"
 
 
 def test_members_added_as_viewer_and_accounts_created_on_demand(env):
@@ -252,6 +294,21 @@ def test_deleted_user_is_removed_and_suspended(env):
     assert env.platform.is_user_suspended(5) is True
 
 
+def test_member_before_the_link_stays_manual(env):
+    """ AC-13a: a member of the existing project keeps their role and is never removed by the sync """
+    env.platform.members[1] = {5: ["editor"]}
+    jane, bob = users(env, "jane@contoso.com", "bob@contoso.com")
+    group = env.svc.create_group(group_body("Taken", members=[jane["id"], bob["id"]]))
+    env.run()
+    bob_id = env.platform.users["bob@contoso.com"]["id"]
+    assert env.platform.members[1] == {5: ["editor"], bob_id: ["viewer"]}
+    assert env.guards.synced_user_ids(1) == {bob_id}
+    env.svc.patch_group(group["id"], patch(("Remove", "members", None)))
+    env.svc.delete_user(jane["id"])
+    env.run()
+    assert env.platform.members[1] == {5: ["editor"]}
+
+
 def test_admin_added_by_platform_admin_is_kept_by_sync(env):
     jane, = users(env, "jane@contoso.com")
     group = env.svc.create_group(group_body("Team", members=[jane["id"]]))
@@ -352,49 +409,120 @@ def test_graph_pull_replaces_edges(env):
 
 # ---------- rename and removal (AC-10, AC-11) ----------
 
-def test_group_rename_renames_project(env):
+def test_group_rename_keeps_the_elitea_project_name(env):
     group = env.svc.create_group(group_body("Team"))
     env.run()
+    project_id = env.project_of(group["id"])
+    env.platform.rename_project(project_id, "Team (renamed in ELITEA)")
     env.svc.patch_group(group["id"], patch(("Replace", "displayName", "Team / 2026")))
-    env.run()
-    assert env.platform.projects[env.project_of(group["id"])]["name"] == "Team - 2026"
+    env.sync.sync_all(full=True)
+    assert env.project_of(group["id"]) == project_id
+    assert env.platform.projects[project_id]["name"] == "Team (renamed in ELITEA)"
+    assert env.sync.overview()[0]["display_name"] == "Team / 2026"
 
 
-def test_group_delete_suspends_and_unprotects_project(env):
+def test_group_delete_removes_synced_members_keeps_manual_and_suspends(env):
     jane, = users(env, "jane@contoso.com")
     group = env.svc.create_group(group_body("Team", members=[jane["id"]]))
     env.run()
     project_id = env.project_of(group["id"])
+    env.platform.members[project_id][42] = ["editor"]   # added by hand
     env.svc.delete_group(group["id"])
     env.run()
     assert env.platform.projects[project_id]["suspended"] is True
-    assert env.guards.is_protected(project_id) is False
-    assert env.platform.members[project_id] == {5: ["viewer"]}   # data and members kept
+    assert env.guards.is_linked(project_id) is False
+    assert env.platform.members[project_id] == {42: ["editor"]}
+    assert env.guards.synced_user_ids(project_id) == frozenset()
+
+
+def test_deleted_linked_project_is_mapped_again(env):
+    jane, = users(env, "jane@contoso.com")
+    group = env.svc.create_group(group_body("Team", members=[jane["id"]]))
+    env.run()
+    first = env.project_of(group["id"])
+    env.platform.delete_project(first)
+    env.sync.sync_all(full=True)
+    second = env.project_of(group["id"])
+    assert second not in (None, first)
+    assert env.platform.members[second] == {5: ["viewer"]}
+    assert env.guards.is_linked(first) is False
+
+
+def test_unlink_moves_the_group_to_a_renamed_manual_project(env):
+    """ AC-19: auto-created project → unlink → a manual project renamed to the group name is linked """
+    jane, = users(env, "jane@contoso.com")
+    group = env.svc.create_group(group_body("Team", members=[jane["id"]]))
+    env.run()
+    auto = env.project_of(group["id"])
+    env.platform.projects[9] = {"id": 9, "name": "Legacy team", "suspended": False}
+    env.platform.members[9] = {77: ["admin"]}
+    env.platform.rename_project(9, "Team")
+    env.platform.rename_project(auto, "Team (auto)")
+    env.sync.unlink(group["id"])
+    assert env.svc.group_summary(group["id"])["status"] == "pending"
+    assert env.platform.projects[auto]["suspended"] is False and env.platform.members[auto] == {}
+    env.run()
+    assert env.project_of(group["id"]) == 9
+    assert env.platform.members[9] == {77: ["admin"], 5: ["viewer"]}
+    assert "SCIM_PROJECT_UNLINKED" in {e["reason_code"] for e in env.platform.audit}
 
 
 # ---------- guards (AC-12, AC-13) ----------
 
-def test_guards_for_protected_project(env):
+def test_guards_protect_only_synced_members(env):
     jane, = users(env, "jane@contoso.com")
     group = env.svc.create_group(group_body("Team", members=[jane["id"]]))
     env.run()
     project_id = env.project_of(group["id"])
+    env.platform.members[project_id][42] = ["editor"]   # added by hand
     g = env.guards
-    assert g.can_change_project(project_id) is False
-    assert g.can_change_membership(project_id) is False
-    assert g.can_add_admin(project_id, ["admin"]) is True
-    assert g.can_add_admin(project_id, ["viewer"]) is False
-    assert g.can_add_admin(project_id, ["admin", "editor"]) is False
-    assert g.can_set_roles(project_id, user_ids=[5], roles=["editor"], member_ids=[5]) is True
-    assert g.can_set_roles(project_id, user_ids=[5], roles=[], member_ids=[5]) is False
-    assert g.can_set_roles(project_id, user_ids=[9], roles=["viewer"], member_ids=[5]) is False
-    assert project_id in g.protected_ids()
+    assert project_id in g.linked_ids()
+    assert g.synced_user_ids(project_id) == {5}
+    assert g.refusal(project_id, [42]) is None                      # remove a manual member
+    assert g.refusal(project_id, [42], roles=[]) is None
+    assert g.refusal(project_id, [5], roles=["editor"]) is None     # roles of a synced member
+    body, status = g.refusal(project_id, [5, 42])                     # remove a synced member
+    assert status == 403 and body["scim_synced"] == [5]
+    assert g.refusal(project_id, [5], roles=[])[1] == 403
 
 
 def test_guards_allow_everything_for_normal_projects(env):
-    g = env.guards
-    assert g.can_change_project(1) is True and g.can_change_membership(1) is True
-    assert g.can_set_roles(1, user_ids=[9], roles=[], member_ids=[]) is True
+    assert env.guards.synced_user_ids(1) == frozenset()
+    assert env.guards.refusal(1, [9]) is None and env.guards.refusal(1, [9], roles=[]) is None
+
+
+# ---------- stable ids (AC-17) ----------
+
+def test_user_with_an_external_id_in_use_is_409(env):
+    env.svc.create_user(user_body("jane@contoso.com", external_id="oid-1"))
+    with pytest.raises(protocol.ScimError) as exc:
+        env.svc.create_user(user_body("jane.doe@contoso.com", external_id="oid-1"))
+    assert exc.value.status == 409 and exc.value.scim_type == "uniqueness"
+
+
+def test_group_with_an_external_id_in_use_is_409(env):
+    env.svc.create_group(group_body("Team", external_id="gid-1"))
+    with pytest.raises(protocol.ScimError) as exc:
+        env.svc.create_group(group_body("Team 2", external_id="gid-1"))
+    assert exc.value.status == 409 and exc.value.scim_type == "uniqueness"
+
+
+def test_external_id_of_a_deleted_user_can_be_used_again(env):
+    jane = env.svc.create_user(user_body("jane@contoso.com", external_id="oid-1"))
+    env.svc.delete_user(jane["id"])
+    assert env.svc.create_user(user_body("jane@contoso.com", external_id="oid-1"))["id"] != jane["id"]
+
+
+def test_email_change_keeps_the_account_and_membership(env):
+    jane, = users(env, "jane@contoso.com")
+    group = env.svc.create_group(group_body("Team", members=[jane["id"]]))
+    env.run()
+    renamed = dict(user_body("jane.smith@contoso.com", external_id="oid-jane@contoso.com"))
+    env.svc.replace_user(jane["id"], renamed)
+    env.run()
+    assert env.svc.user_link(jane["id"]) == 5
+    assert env.members(group["id"]) == {5: ["viewer"]}
+    assert env.platform.created_users == []
 
 
 # ---------- admin overview (AC-14) ----------
@@ -513,7 +641,7 @@ def test_group_that_got_a_project_meanwhile_is_not_created_again(env):
     first = env.project_of(group["id"])
     stale = projects_module.ProjectSync(env.get_session, env.platform)
     row = type("Row", (), {"id": group["id"], "display_name": "Team", "status": "pending", "project_id": None})
-    stale._create(row, {"created": 0})   # pylint: disable=W0212
+    stale._link_or_create(row, {"created": 0, "linked": 0, "errors": 0})   # pylint: disable=W0212
     assert env.project_of(group["id"]) == first
     assert [p["name"] for p in env.platform.projects.values()].count("Team") == 1
 
@@ -529,3 +657,82 @@ def test_project_changes_notify_other_replicas(env):
     env.svc.delete_group(group["id"])
     env.run()
     assert notified
+
+
+# ---------- review of iteration 3 ----------
+
+def test_unlink_without_renaming_links_the_same_project_again(env):
+    jane, = users(env, "jane@contoso.com")
+    group = env.svc.create_group(group_body("Team", members=[jane["id"]]))
+    env.run()
+    first = env.project_of(group["id"])
+    env.sync.unlink(group["id"])
+    env.run()
+    assert env.project_of(group["id"]) == first
+    assert [p["name"] for p in env.platform.projects.values()].count("Team") == 1
+    assert env.platform.members[first] == {5: ["viewer"]}
+
+
+def test_unlink_waits_for_another_replica(env):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def busy():
+        yield False
+
+    group = env.svc.create_group(group_body("Team"))
+    env.run()
+    other = projects_module.ProjectSync(env.get_session, env.platform, lock=busy)
+    with pytest.raises(RuntimeError):
+        other.unlink(group["id"])
+    assert env.project_of(group["id"]) is not None
+
+
+def test_failed_retire_keeps_the_group_removed_and_retries(env):
+    jane, = users(env, "jane@contoso.com")
+    group = env.svc.create_group(group_body("Team", members=[jane["id"]]))
+    env.run()
+    project_id = env.project_of(group["id"])
+    original = env.platform.remove_member
+    env.platform.remove_member = lambda *a: (_ for _ in ()).throw(RuntimeError("platform down"))
+    env.svc.delete_group(group["id"])
+    env.run()
+    summary = env.sync.overview()[0]
+    assert summary["status"] == "removed" and summary["error"]
+    assert len(env.platform.projects) == 2   # no new project for the deleted group
+    env.platform.remove_member = original
+    env.run()
+    assert env.platform.projects[project_id]["suspended"] is True and env.platform.members[project_id] == {}
+    assert env.sync.overview()[0]["error"] is None
+
+
+def test_removed_group_whose_project_was_deleted_stays_removed(env):
+    group = env.svc.create_group(group_body("Team"))
+    env.run()
+    env.platform.delete_project(env.project_of(group["id"]))
+    env.svc.delete_group(group["id"])
+    env.run()
+    row = env.sync.overview()[0]
+    assert row["status"] == "removed" and row["project_id"] is None
+    assert len(env.platform.projects) == 1
+
+
+@pytest.mark.parametrize("change", ["replace", "patch"])
+def test_external_id_of_another_live_group_is_409_on_update(env, change):
+    env.svc.create_group(group_body("A", external_id="gid-a"))
+    b = env.svc.create_group(group_body("B", external_id="gid-b"))
+    with pytest.raises(protocol.ScimError) as exc:
+        if change == "replace":
+            env.svc.replace_group(b["id"], group_body("B", external_id="gid-a"))
+        else:
+            env.svc.patch_group(b["id"], patch(("Replace", "externalId", "gid-a")))
+    assert exc.value.status == 409
+
+
+def test_external_id_of_another_live_user_is_409_on_update(env):
+    env.svc.create_user(user_body("jane@contoso.com", external_id="oid-1"))
+    bob = env.svc.create_user(user_body("bob@contoso.com", external_id="oid-2"))
+    with pytest.raises(protocol.ScimError) as exc:
+        env.svc.replace_user(bob["id"], user_body("bob@contoso.com", external_id="oid-1"))
+    assert exc.value.status == 409
+    assert env.svc.replace_user(bob["id"], user_body("bob@contoso.com", external_id="oid-2"))["externalId"] == "oid-2"

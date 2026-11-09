@@ -1,5 +1,5 @@
-"""#5202: POST /admin/users/<mode>/<project_id> on a SCIM-managed project. Only an ELITEA admin
-(administration mode) adding a project admin (role admin only) gets through; DELETE is always refused."""
+"""#5202 (AC-12, AC-18): /admin/users/<mode>/<project_id> on a project linked to a SCIM group. Adding and
+role changes work as usual; removing synced members (or clearing their roles) is 403; rows say which are synced."""
 import importlib.util
 import pathlib
 import sys
@@ -12,19 +12,15 @@ PROTECTED, NORMAL = 7, 3
 
 
 class FakeGuards:
-    def is_protected(self, project_id):
+    def is_linked(self, project_id):
         return project_id == PROTECTED
 
-    def refusal(self, project_id, allowed=None):
-        if not self.is_protected(project_id) or (allowed is not None and allowed(self)):
-            return None
-        return {"error": "managed by SCIM", "scim_managed": True}, 403
+    def synced_user_ids(self, project_id):
+        return frozenset({5}) if project_id == PROTECTED else frozenset()
 
-    def can_add_admin(self, project_id, roles):
-        return list(roles) == ["admin"]
-
-    def can_set_roles(self, project_id, user_ids, roles, member_ids):
-        return bool(roles) and set(user_ids) <= set(member_ids)
+    def refusal(self, project_id, user_ids, roles=None):
+        hit = sorted(set(user_ids) & self.synced_user_ids(project_id))
+        return None if roles or not hit else ({"error": "synced", "scim_synced": hit}, 403)
 
 
 class Request:
@@ -70,8 +66,8 @@ def api(monkeypatch):
     monkeypatch.setitem(sys.modules, spec.name, module)
     spec.loader.exec_module(module)
 
-    def add_user_to_project_or_create(email, project_id, roles, admin_grant=False):
-        calls.append((email, project_id, roles, admin_grant))
+    def add_user_to_project_or_create(email, project_id, roles):
+        calls.append((email, project_id, roles))
         return {"status": "ok", "id": 9, "email": email}
 
     def update_roles_for_user(project_id, user_ids, roles):
@@ -97,35 +93,26 @@ def post(api, project_id, roles, mode):
     return instance.post(project_id=project_id, mode=mode)
 
 
-def test_elitea_admin_adds_project_admin_to_scim_project(api):
-    result = post(api, PROTECTED, ["admin"], "administration")
-    assert result[1] == 200
-    assert api[2] == [("new@contoso.com", PROTECTED, ["admin"], True)]
-
-
-@pytest.mark.parametrize("roles, mode", [
-    (["admin"], "default"),            # a project admin, not an ELITEA admin
-    (["viewer"], "administration"),
-    (["admin", "editor"], "administration"),
-])
-def test_other_adds_to_scim_project_are_refused(api, roles, mode):
+@pytest.mark.parametrize("roles, mode", [(["viewer"], "default"), (["admin"], "administration")])
+def test_manual_add_to_linked_project_is_allowed(api, roles, mode):
     result = post(api, PROTECTED, roles, mode)
-    assert result[1] == 403 and result[0]["scim_managed"] is True
-    assert api[2] == []
+    assert result[1] == 200 and api[2] == [("new@contoso.com", PROTECTED, roles)]
 
 
-def test_normal_project_add_is_not_an_admin_grant(api):
-    result = post(api, NORMAL, ["viewer"], "default")
-    assert result[1] == 200
-    assert api[2] == [("new@contoso.com", NORMAL, ["viewer"], False)]
-
-
-def test_remove_from_scim_project_is_refused_even_in_administration(api):
+def delete(api, ids):
     instance, request, calls = api
-    request.args = {"id[]": "5"}
-    result = instance.delete(project_id=PROTECTED, mode="administration")
-    assert result[1] == 403 and calls == []
+    request.args = {"id[]": ids}
+    return instance.delete(project_id=PROTECTED, mode="administration")
 
+
+def test_removing_a_synced_member_is_refused(api):
+    result = delete(api, "9,5")
+    assert result[1] == 403 and result[0]["scim_synced"] == [5] and api[2] == []
+
+
+def test_removing_a_manual_member_is_allowed(api):
+    result = delete(api, "9")
+    assert result[1] == 204 and api[2][0][0] == "remove"
 
 
 def put(api, project_id, user_id, roles):
@@ -134,14 +121,27 @@ def put(api, project_id, user_id, roles):
     return instance.put(project_id=project_id, mode="administration")
 
 
-def test_role_change_of_member_in_scim_project_is_allowed(api):
+def test_role_change_of_synced_member_is_allowed(api):
     result = put(api, PROTECTED, 5, ["editor"])
     assert result[1] == 200 and api[2] == [("roles", PROTECTED, [5], ["editor"])]
 
 
-@pytest.mark.parametrize("user_id, roles", [(5, []), (9, ["viewer"])])
-def test_role_change_that_removes_or_adds_is_refused_before_the_rpc(api, user_id, roles):
+def test_clearing_roles_of_synced_member_is_refused_before_the_rpc(api):
     """ The RPC's own refusal arrives as a RuntimeError over RPC: the API checks first and answers 403 """
-    result = put(api, PROTECTED, user_id, roles)
-    assert result[1] == 403 and result[0]["scim_managed"] is True
-    assert api[2] == []
+    result = put(api, PROTECTED, 5, [])
+    assert result[1] == 403 and result[0]["scim_synced"] == [5] and api[2] == []
+
+
+def test_rows_say_which_members_are_synced(api, monkeypatch):
+    instance, request, _ = api
+    request.args = {}
+    roles = {5: ["viewer"], 9: ["editor"]}
+    instance.module.get_users_roles_in_project = lambda project_id, filter_system_user: roles
+    users_module = sys.modules["fake5202users.api.v2.users"]
+    monkeypatch.setattr(users_module.auth, "list_users", lambda user_ids: [
+        {"id": i, "name": f"u{i}", "email": f"u{i}@contoso.com", "last_login": None} for i in sorted(user_ids)],
+        raising=False)
+    instance.module.context.rpc_manager.call.social_get_users = lambda ids: []
+    body, status = instance.get(project_id=PROTECTED, mode="default")
+    assert status == 200 and body["scim_managed"] is True
+    assert {r["id"]: r["scim_synced"] for r in body["rows"]} == {5: True, 9: False}

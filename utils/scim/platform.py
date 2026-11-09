@@ -85,8 +85,11 @@ class Platform:
             raise RuntimeError("The SCIM service user is not available")
         return self.rpc.timeout(600).projects_scim_create(name=name, owner_id=owner_id)
 
-    def rename_project(self, project_id, name):
-        self.rpc.timeout(30).projects_scim_rename(project_id=project_id, name=name)
+    def find_projects_by_name(self, name):
+        """ Team projects a group may be linked to: never the public/AI or support project """
+        from ...tasks.lifecycle_tasks import _protected_project_ids  # pylint: disable=C0415
+        system = _protected_project_ids()
+        return [pid for pid in self.rpc.timeout(30).projects_scim_find_by_name(name=name) or [] if pid not in system]
 
     def set_project_suspended(self, project_id, suspended):
         self.rpc.timeout(30).projects_scim_set_suspended(project_id=project_id, suspended=suspended)
