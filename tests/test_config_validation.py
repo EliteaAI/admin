@@ -225,3 +225,21 @@ def test_regex_list_rejects_nested_quantifier_without_echoing_it(pattern):
 @pytest.mark.parametrize("pattern", [r"\d{3,}", r"AKIA[0-9]{4,16}", r"(foo|bar)+", r"(\d+\.){3}", r"(ab?)+"])
 def test_regex_list_accepts_bounded_or_flat_quantifiers(pattern):
     assert config_validation.validate_config_value(REGEX_LIST_FIELD_SCHEMA, [pattern]) == []
+
+
+# An integer limit field as plugins declare it, e.g. the chat starters limit (1–10).
+INTEGER_LIMIT_FIELD_SCHEMA = {
+    "type": "integer",
+    "default": 4,
+    "value_schema": {"type": "integer", "minimum": 1, "maximum": 10},
+}
+
+
+@pytest.mark.parametrize("value", [1, 4, 10])
+def test_integer_limit_in_range_is_accepted(value):
+    assert config_validation.validate_config_value(INTEGER_LIMIT_FIELD_SCHEMA, value) == []
+
+
+@pytest.mark.parametrize("value", [0, 11, 4.5, "4"])
+def test_integer_limit_out_of_range_or_wrong_type_is_rejected(value):
+    assert config_validation.validate_config_value(INTEGER_LIMIT_FIELD_SCHEMA, value)
