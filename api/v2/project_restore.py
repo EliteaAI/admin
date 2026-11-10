@@ -33,6 +33,7 @@ from tools import constants as c  # pylint: disable=E0401
 from ...utils import backup_crypto
 from ...utils import chat_backup
 from ...utils.chat_restore import AttachmentRestorer, iter_zip_sql, open_backup_zip
+from ...utils.skill_files_backup import SkillFileRestorer, read_skill_files_manifest, restore_summary_counts
 from ...utils.project_restore import (
     KIND_SAFE, KIND_PG_DUMP, HEADER_SCAN_BYTES, SAFE_RESTORE_DENIED_TABLES,
     detect_artifact_kind, parse_header, pg_dump_schema, restore_safe_backup,
@@ -200,6 +201,12 @@ def _attachment_restorer(project_id, archive, manifest, restore_chats):
     )
 
 
+def _skill_file_restorer(project_id, archive):
+    """ Uploader of the skill file objects of a backup archive into the project's bucket """
+    from tools import MinioClient  # pylint: disable=E0401,C0415
+    return SkillFileRestorer(lambda: MinioClient.from_project_id(project_id), archive)
+
+
 def _verify_stream(open_bytes):
     """ Walk the whole artifact so a failure raises before anything is applied """
     for _ in open_bytes():
@@ -302,7 +309,7 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0913,R0914,R0915
             return {
                 "ok": False,
                 "error": "only encrypted backups can be restored on this setup; "
-                         "export the project again and upload the .sql.enc file",
+                         "export the project again and upload the .sql.enc or .zip.enc file",
             }, 400
         #
         raw_head = _read_head(open_bytes, HEADER_SCAN_BYTES)
@@ -326,7 +333,10 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0913,R0914,R0915
             return {"ok": False, "error": "unrecognized backup file"}, 400
         #
         artifact = parse_header(head)
-        artifact["has_attachment_files"] = archive is not None
+        skill_files_manifest = read_skill_files_manifest(archive)
+        artifact["has_attachment_files"] = archive is not None \
+            and artifact["chats_included"] == chat_backup.CHATS_WITH_ATTACHMENTS
+        artifact["skill_files_count"] = skill_files_manifest.get("files_count", 0)
         artifact["attachments_size"] = sum(
             item.get("size") or 0 for item in (manifest or {}).get("attachments") or []
             if item.get("status") == chat_backup.ATTACHMENT_OK
@@ -429,7 +439,7 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0913,R0914,R0915
             )
             #
             # Without the files in the backup, attachments can only be re-linked
-            if restore_chats == chat_backup.CHATS_WITH_ATTACHMENTS and archive is None:
+            if restore_chats == chat_backup.CHATS_WITH_ATTACHMENTS and not artifact["has_attachment_files"]:
                 restore_chats = chat_backup.CHATS_WITHOUT_ATTACHMENTS
             #
             if kind == KIND_SAFE:
@@ -437,6 +447,7 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0913,R0914,R0915
                 if artifact["chats_included"] != chat_backup.CHATS_NONE \
                         and restore_chats != chat_backup.CHATS_NONE:
                     handler = _attachment_restorer(project_id, archive, manifest, restore_chats)
+                skill_file_handler = _skill_file_restorer(project_id, archive)
                 current_user = auth.current_user()
                 result = restore_safe_backup(
                     connection,
@@ -460,15 +471,17 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0913,R0914,R0915
                         "target_project_id": project_id,
                     },
                     attachment_handler=handler,
+                    skill_file_handler=skill_file_handler,
+                    project_id=project_id,
                 )
                 log.info(
                     "project_restore_applied: project %s (dry_run=%s, chats_included=%s,"
-                    " restore_chats=%s, chats=%s, attachments=%s)",
+                    " restore_chats=%s, chats=%s, attachments=%s, skill_files=%s)",
                     project_id, dry_run, artifact["chats_included"], restore_chats,
                     result.get("chats"), {
                         k: v for k, v in (result.get("attachments") or {}).items()
                         if k != "failed_names"
-                    },
+                    }, restore_summary_counts(result.get("skill_files")),
                 )
             else:
                 # psql runs --single-transaction and commits on EOF, so a frame
@@ -516,7 +529,7 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     @register_openapi(
         name="Restore Project Backup",
         description="Restore a backup produced by the project backup endpoint into a "
-                    "project schema. Upload the .sql.enc (or .sql) file as multipart "
+                    "project schema. Upload the .sql.enc or .zip.enc (or plain .sql / .zip) file as multipart "
                     "form field 'file'. An encrypted artifact is decrypted and verified "
                     "with a key derived from this setup's SECRETS_MASTER_KEY, so only "
                     "artifacts produced by a setup sharing that key can be restored. "
@@ -567,7 +580,7 @@ class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     @register_openapi(
         name="Restore Project Backup (project scope)",
         description="Restore a redacted (safe) backup into this project. Upload the "
-                    ".sql.enc (or .sql) file as multipart form field 'file'. An encrypted "
+                    ".sql.enc or .zip.enc (or plain .sql / .zip) file as multipart form field 'file'. An encrypted "
                     "artifact is decrypted and verified with a key derived from this "
                     "setup's SECRETS_MASTER_KEY, so only artifacts produced by a setup "
                     "sharing that key can be restored. Only the 'safe' mode is "

@@ -27,6 +27,7 @@ from pylon.core.tools import log  # pylint: disable=E0611,E0401
 from .project_backup import SAFE_MODE_EXCLUDED_TABLES
 from .chat_backup import CHAT_BACKUP_TABLES, CHATS_NONE, CHAT_OPTIONS
 from . import chat_restore
+from .skill_files_backup import SKILL_FILES_TABLE, SKILL_FILE_WRITE_LOCK
 
 
 KIND_SAFE = "safe"
@@ -1016,7 +1017,7 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
         denied_tables=(), owner_user_id=None, owner_project_id=None,
         source_project_id=None, member_user_ids=None,
         backup_chats=CHATS_NONE, restore_chats=CHATS_NONE, chat_context=None,
-        attachment_handler=None,
+        attachment_handler=None, skill_file_handler=None, project_id=None,
 ):
     """ Apply a safe (INSERT-only) backup to a schema, return a summary
 
@@ -1028,6 +1029,10 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
     not requested; otherwise the chat tables stay denied like before.
     attachment_handler(cursor, attachments, dry_run) uploads or re-links the
     files of the restored attachment messages and returns a summary.
+    skill_file_handler(cursor, dry_run) uploads the skill file objects the
+    restored rows reference before they commit and returns a summary.
+    project_id is the target project: while the restore runs, elitea_core
+    deletes none of its skill file objects.
     """
     dbapi_connection = _dbapi_connection(raw_connection)
     requested = {table.strip() for table in (tables or ()) if table.strip()}
@@ -1119,6 +1124,9 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
     #
     try:
         cursor.execute("SET LOCAL search_path TO {}, public".format(_quote(schema)))
+        # Before any TRUNCATE: truncating first deadlocks with a core delete holding the lock
+        if project_id is not None:
+            cursor.execute(SKILL_FILE_WRITE_LOCK, (project_id,))
         #
         if truncate_targets:
             cursor.execute(
@@ -1234,6 +1242,8 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
                 summary["chats"]["included"] = restore_chats
                 if attachment_handler is not None:
                     summary["attachments"] = attachment_handler(cursor, attachments, dry_run)
+            if skill_file_handler is not None and SKILL_FILES_TABLE in seen_tables:
+                summary["skill_files"] = skill_file_handler(cursor, dry_run)
             for table, statement in deferred_setvals:
                 cursor.execute(statement)
                 summary["statements"] += 1

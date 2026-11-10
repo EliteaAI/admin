@@ -85,6 +85,14 @@ SAFE_MODE_EXCLUDED_TABLES = {
 }
 
 #
+# Tables exported as they are in "safe" mode: their values only name content
+# that the backup carries unredacted anyway, and a redacted value breaks them
+#
+SAFE_MODE_VERBATIM_TABLES = {
+    "skill_version_files": "skill file paths, sizes and content hashes",
+}
+
+#
 # Column / JSON key names whose string values are redacted in "safe" mode
 #
 SENSITIVE_KEY_PARTS = (
@@ -504,7 +512,7 @@ def iter_project_backup_sql(  # pylint: disable=R0913,R0914,R0915
             if not table_columns:
                 continue
             #
-            redactor = _Redactor(table_columns, enabled=safe_mode)
+            redactor = _Redactor(table_columns, enabled=safe_mode and table not in SAFE_MODE_VERBATIM_TABLES)
             yield "--\n-- {}\n--\n".format(table)
             #
             for item in _iter_table_sql(
