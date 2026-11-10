@@ -17,8 +17,7 @@
 
 """ API """
 
-import codecs
-import tempfile
+import time
 import urllib.parse
 
 import flask  # pylint: disable=E0401
@@ -31,11 +30,10 @@ from tools import constants as c  # pylint: disable=E0401
 
 from ...utils import backup_crypto
 from ...utils import chat_backup
-from ...utils.chat_restore import AttachmentRestorer, iter_zip_sql, open_backup_zip
+from ...utils import restore_jobs
+from ...utils import restore_runner
 from ...utils.project_restore import (
-    KIND_SAFE, KIND_PG_DUMP, HEADER_SCAN_BYTES, SAFE_RESTORE_DENIED_TABLES,
-    detect_artifact_kind, parse_header, pg_dump_schema, restore_safe_backup,
-    run_psql, server_settings,
+    KIND_SAFE, KIND_PG_DUMP, INSPECT_BYTES, inspect_head, pg_dump_schema,
 )
 
 
@@ -47,13 +45,14 @@ PROJECT_BACKUP_PERMISSION = "models.project_backup"
 
 PROJECT_RESTORE_PERMISSION = "models.project_backup.restore"
 
-READ_CHUNK = 262144
 TRUE_VALUES = ("1", "true", "yes", "on")
 
 SAFE_MODES = ("safe", "sanitized", "default")
 FULL_MODES = ("full", "raw", "as_is")
 
 DEFAULT_MAX_ARCHIVE_MB = 4096
+
+WAIT_POLL_SECONDS = 1
 
 
 def _flag(name, default=False):
@@ -105,7 +104,7 @@ def _is_own_personal_project(project_id):
         return False
     #
     try:
-        personal_project_id = context.rpc_manager.timeout(5). \
+        personal_project_id = context.rpc_manager.timeout(2). \
             projects_get_personal_project_id(user_id)
     except Exception:  # pylint: disable=W0703
         log.exception("project_restore: failed to resolve the personal project of user %s", user_id)
@@ -121,53 +120,6 @@ def _project_member_ids(project_id):
     except Exception:  # pylint: disable=W0703
         log.exception("project_restore: failed to resolve the users of project %s", project_id)
         return None
-
-
-def _byte_chunks(spool):
-    """ Re-readable byte stream over the uploaded file """
-    def opener():
-        spool.seek(0)
-        while True:
-            chunk = spool.read(READ_CHUNK)
-            if not chunk:
-                break
-            yield chunk
-    #
-    return opener
-
-
-def _text_chunks(open_bytes):
-    """ Re-readable text stream, decoded across chunk boundaries """
-    def opener():
-        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-        for chunk in open_bytes():
-            text = decoder.decode(chunk)
-            if text:
-                yield text
-        tail = decoder.decode(b"", True)
-        if tail:
-            yield tail
-    #
-    return opener
-
-
-def _spool_decrypted(open_bytes):
-    """ Decrypted copy of the artifact in a temp file: a ZIP needs random access """
-    target = tempfile.TemporaryFile()  # pylint: disable=R1732
-    for chunk in open_bytes():
-        target.write(chunk)
-    target.seek(0)
-    return target
-
-
-def _max_archive_bytes(handler):
-    module = getattr(handler, "module", None)
-    config = getattr(getattr(module, "descriptor", None), "config", None) or {}
-    try:
-        megabytes = int(config.get("backup_max_archive_mb", DEFAULT_MAX_ARCHIVE_MB))
-    except (TypeError, ValueError):
-        megabytes = DEFAULT_MAX_ARCHIVE_MB
-    return megabytes * 1024 * 1024
 
 
 def _requested_restore_chats():
@@ -188,40 +140,67 @@ def _attachment_settings(project_id):
         return "attachments", 365
 
 
-def _attachment_restorer(project_id, archive, manifest, restore_chats):
-    from tools import MinioClient  # pylint: disable=E0401,C0415
-    bucket, retention_days = _attachment_settings(project_id)
-    return AttachmentRestorer(
-        MinioClient.from_project_id(project_id), bucket,
-        archive=archive, manifest=manifest,
-        with_files=restore_chats == chat_backup.CHATS_WITH_ATTACHMENTS,
-        retention_days=retention_days,
+def _storage_settings(project_id):
+    """ Storage access of the project for the worker: resolved here, where RPC answers """
+    from tools import MinioClient, config as pylon_config  # pylint: disable=E0401,C0415
+    if getattr(pylon_config, "STORAGE_ENGINE", "s3") != "s3":
+        raise RuntimeError("chat attachments can only be restored with the s3 storage engine")
+    client = MinioClient.from_project_id(project_id)
+    access_key, secret_key, region, url = client.extract_access_data(
+        client.configuration_title, client.is_local,
     )
+    return {"project_id": project_id, "access_key": access_key, "secret_key": secret_key,
+            "region": region, "url": url}
 
 
-def _verify_stream(open_bytes):
-    """ Walk the whole artifact so a failure raises before anything is applied """
-    for _ in open_bytes():
-        pass
+def _instance():
+    """ Stable across restarts of the same pod, unlike context.id """
+    return getattr(context, "node_name", None) or "pylon"
 
 
-def _read_head(open_bytes, limit):
-    """ First bytes of the artifact, without consuming the opener """
+def _read_upload_head(source):
+    """ First bytes of the upload, and the stream positioned after them """
     head = bytearray()
-    #
-    for chunk in open_bytes():
-        head += chunk
-        if len(head) >= limit:
+    while len(head) < INSPECT_BYTES:
+        chunk = source.stream.read(INSPECT_BYTES - len(head))
+        if not chunk:
             break
-    #
-    return bytes(head[:limit])
+        head += chunk
+    return bytes(head)
+
+
+class _PrefixedStream:  # pylint: disable=R0903
+    """ The upload stream with the bytes already read put back in front """
+
+    def __init__(self, prefix, stream):
+        self.prefix = prefix
+        self.stream = stream
+
+    def read(self, size=-1):
+        if self.prefix:
+            data, self.prefix = self.prefix[:size], self.prefix[size:]
+            return data
+        return self.stream.read(size)
+
+
+def _wait_for_job(store, job_id):
+    """ The synchronous response of an API client that asked to wait """
+    while True:
+        job = store.get(job_id)
+        if job is None:
+            return {"ok": False, "error": "restore job disappeared"}, 500
+        if job["status"] == restore_jobs.STATUS_DONE:
+            return job["result"], 200
+        if job["status"] == restore_jobs.STATUS_FAILED:
+            return job["result"] or {"ok": False, "error": job["error"]}, job["status_code"] or 500
+        time.sleep(WAIT_POLL_SECONDS)
 
 
 def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0913,R0914,R0915
-        project_id, allow_pg_dump=True, allow_mismatch_override=True, restrict_tables=False,
-        policy=backup_crypto.POLICY_ENABLED, max_archive_bytes=DEFAULT_MAX_ARCHIVE_MB * 1024 * 1024,
+        module, project_id, allow_pg_dump=True, allow_mismatch_override=True, restrict_tables=False,
+        policy=backup_crypto.POLICY_ENABLED,
 ):
-    """ Apply the uploaded artifact to the project schema """
+    """ Validate the uploaded artifact and start applying it in a forked task """
     if not _is_same_site_request():
         return {"ok": False, "error": "access_denied"}, 403
     #
@@ -252,6 +231,7 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0913,R0914,R0915
     truncate = _flag("truncate")
     dry_run = _flag("dry_run")
     inspect_only = _flag("inspect")
+    wait = _flag("wait")
     allow_mismatch = _flag("allow_project_mismatch") if allow_mismatch_override else False
     restore_chats = _requested_restore_chats()
     if restore_chats is None:
@@ -260,253 +240,250 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0913,R0914,R0915
     from tools import project_constants as pc  # pylint: disable=E0401,C0415
     schema = pc["PROJECT_SCHEMA_TEMPLATE"].format(project_id)
     #
-    spool = tempfile.TemporaryFile()  # pylint: disable=R1732
-    archive_spool = None
-    archive = None
+    source = flask.request.files["file"]
+    filename = source.filename
+    head = _read_upload_head(source)
+    if not head:
+        return {"ok": False, "error": "empty file"}, 400
+    #
+    # The envelope is checked on raw bytes, before anything is decoded: a
+    # successful decrypt is what proves the artifact came from a setup holding
+    # this SECRETS_MASTER_KEY, so nothing downstream ever sees a hand-written
+    # file. The first frame is verified here, every other one in the task.
+    #
+    encrypted = backup_crypto.is_encrypted(head[:len(backup_crypto.ENVELOPE_MAGIC)])
+    master_key = backup_crypto.configured_master_key()
+    if encrypted and master_key is None:
+        return {
+            "ok": False,
+            "error": "this backup is encrypted but SECRETS_MASTER_KEY is not "
+                     "configured on this setup",
+        }, 400
+    if not encrypted and policy == backup_crypto.POLICY_REQUIRED:
+        return {
+            "ok": False,
+            "error": "only encrypted backups can be restored on this setup; "
+                     "export the project again and upload the .sql.enc file",
+        }, 400
     #
     try:
-        source = flask.request.files["file"]
-        filename = source.filename
-        #
-        while True:
-            chunk = source.stream.read(READ_CHUNK)
-            if not chunk:
-                break
-            spool.write(chunk)
-        #
-        size = spool.tell()
-        if not size:
-            return {"ok": False, "error": "empty file"}, 400
-        #
-        # The envelope is checked on raw bytes, before anything is decoded:
-        # a successful decrypt is what proves the artifact came from a setup
-        # holding this SECRETS_MASTER_KEY, so nothing downstream ever sees a
-        # hand-written file.
-        #
-        spool.seek(0)
-        encrypted = backup_crypto.is_encrypted(spool.read(len(backup_crypto.ENVELOPE_MAGIC)))
-        #
-        open_bytes = _byte_chunks(spool)
-        #
-        if encrypted:
-            master_key = backup_crypto.configured_master_key()
-            if master_key is None:
-                return {
-                    "ok": False,
-                    "error": "this backup is encrypted but SECRETS_MASTER_KEY is not "
-                             "configured on this setup",
-                }, 400
-            open_bytes = backup_crypto.wrap_decrypt(open_bytes, master_key)
-        elif policy == backup_crypto.POLICY_REQUIRED:
-            return {
-                "ok": False,
-                "error": "only encrypted backups can be restored on this setup; "
-                         "export the project again and upload the .sql.enc file",
-            }, 400
-        #
-        raw_head = _read_head(open_bytes, HEADER_SCAN_BYTES)
-        manifest = None
-        #
-        # A backup with chat attachments is a ZIP: the SQL part inside it is
-        # what gets applied, the files are uploaded next to it
-        if chat_backup.is_zip(raw_head):
-            if chat_backup.read_zip_info(raw_head) is None:
-                return {"ok": False, "error": "unrecognized backup file"}, 400
-            archive_spool = _spool_decrypted(open_bytes) if encrypted else spool
-            archive_spool.seek(0)
-            archive, _, manifest = open_backup_zip(archive_spool, max_archive_bytes)
-            open_bytes = iter_zip_sql(archive)
-            raw_head = _read_head(open_bytes, HEADER_SCAN_BYTES)
-        #
-        head = raw_head.decode("utf-8", "replace")
-        #
-        kind = detect_artifact_kind(head)
-        if kind is None:
-            return {"ok": False, "error": "unrecognized backup file"}, 400
-        #
-        artifact = parse_header(head)
-        artifact["has_attachment_files"] = archive is not None
-        artifact["attachments_size"] = sum(
-            item.get("size") or 0 for item in (manifest or {}).get("attachments") or []
-            if item.get("status") == chat_backup.ATTACHMENT_OK
-        )
-        artifact["kind"] = kind
-        artifact["filename"] = filename
-        artifact["size"] = size
-        artifact["encrypted"] = encrypted
-        #
-        # The dialog reads what a file carries as soon as it is picked
-        if inspect_only:
-            return {"ok": True, "inspect": True, "artifact": artifact}, 200
-        #
-        source_project = artifact.get("project_id")
-        if isinstance(source_project, int) and source_project != project_id \
-                and not allow_mismatch:
-            if allow_mismatch_override:
-                error = "artifact belongs to project {}; pass " \
-                        "allow_project_mismatch=true to restore it into project {}".format(
-                            source_project, project_id)
-            else:
-                error = "artifact belongs to project {} and can not be restored " \
-                        "into project {}".format(source_project, project_id)
-            return {"ok": False, "error": error, "artifact": artifact}, 409
-        #
-        # Entities coming from another project would stay attributed to its
-        # users, so ownership moves to whoever performs the restore. The owner
-        # columns that hold a project rather than a user move to this project.
-        #
-        owner_user_id = None
-        owner_project_id = None
-        source_project_id = None
-        if isinstance(source_project, int) and source_project != project_id:
-            current_user = auth.current_user()
-            owner_user_id = current_user.get("id") if current_user else None
-            owner_project_id = project_id
-            source_project_id = source_project
-        #
-        # The requested mode decides how the artifact is applied, so the detected
-        # kind has to agree with it: an unexpected file is reported instead of
-        # silently taking the other path.
-        if full_mode and kind != KIND_PG_DUMP:
-            return {
-                "ok": False,
-                "error": "this file is a redacted project backup, not a raw pg_dump;"
-                         " restore it in safe mode",
-                "artifact": artifact,
-            }, 400
-        #
-        if not full_mode and kind != KIND_SAFE:
-            return {
-                "ok": False,
-                "error": "this file is a raw pg_dump and can not be restored in safe mode",
-                "artifact": artifact,
-            }, 400
-        #
-        if full_mode and tables:
-            return {
-                "ok": False,
-                "error": "partial restore is not supported for pg_dump artifacts",
-            }, 400
-        #
-        # A plain pg_dump rebuilds the schema it was taken from: it carries its
-        # own CREATE SCHEMA, fully qualified names and a search_path reset, so
-        # the target search_path is ignored and the restore would recreate the
-        # source project instead of filling this one.
-        #
-        if full_mode:
-            dump_schema = pg_dump_schema(head)
-            artifact["dump_schema"] = dump_schema
-            #
-            if dump_schema is not None and dump_schema != schema:
-                return {
-                    "ok": False,
-                    "error": "this pg_dump rebuilds schema {} and can not be retargeted "
-                             "at {}; restore it in safe mode instead".format(
-                                 dump_schema, schema),
-                    "artifact": artifact,
-                }, 400
-        #
-        connection = context.db.engine.raw_connection()
-        #
-        try:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    "select 1 from information_schema.schemata where schema_name = %s",
-                    (schema,),
-                )
-                if cursor.fetchone() is None:
-                    return {"ok": False, "error": "project schema not found"}, 404
-                #
-                # Client tools newer than the server write parameters it does
-                # not know into the dump preamble; those SETs are dropped
-                known_settings = server_settings(cursor) if full_mode else None
-            connection.rollback()
-            #
-            log.info(
-                "project_restore: applying %s artifact to %s (%s, dry_run=%s)",
-                kind, schema, "partial" if tables else "full", dry_run,
-            )
-            #
-            # Without the files in the backup, attachments can only be re-linked
-            if restore_chats == chat_backup.CHATS_WITH_ATTACHMENTS and archive is None:
-                restore_chats = chat_backup.CHATS_WITHOUT_ATTACHMENTS
-            #
-            if kind == KIND_SAFE:
-                handler = None
-                if artifact["chats_included"] != chat_backup.CHATS_NONE \
-                        and restore_chats != chat_backup.CHATS_NONE:
-                    handler = _attachment_restorer(project_id, archive, manifest, restore_chats)
-                current_user = auth.current_user()
-                result = restore_safe_backup(
-                    connection,
-                    open_chunks=_text_chunks(open_bytes),
-                    schema=schema,
-                    tables=tables,
-                    include_parents=include_parents,
-                    truncate=truncate,
-                    dry_run=dry_run,
-                    denied_tables=SAFE_RESTORE_DENIED_TABLES if restrict_tables else (),
-                    owner_user_id=owner_user_id,
-                    owner_project_id=owner_project_id,
-                    source_project_id=source_project_id,
-                    member_user_ids=_project_member_ids(project_id),
-                    backup_chats=artifact["chats_included"],
-                    restore_chats=restore_chats,
-                    chat_context={
-                        "restorer_id": current_user.get("id") if current_user else None,
-                        "source_project_id": artifact.get("project_id")
-                        if isinstance(artifact.get("project_id"), int) else None,
-                        "target_project_id": project_id,
-                    },
-                    attachment_handler=handler,
-                )
-                log.info(
-                    "project_restore_applied: project %s (dry_run=%s, chats_included=%s,"
-                    " restore_chats=%s, chats=%s, attachments=%s)",
-                    project_id, dry_run, artifact["chats_included"], restore_chats,
-                    result.get("chats"), {
-                        k: v for k, v in (result.get("attachments") or {}).items()
-                        if k != "failed_names"
-                    },
-                )
-            else:
-                # psql runs --single-transaction and commits on EOF, so a frame
-                # that fails halfway through could still be committed before the
-                # process is killed. The artifact is verified end to end first.
-                if encrypted:
-                    _verify_stream(open_bytes)
-                #
-                result = run_psql(
-                    open_chunks=open_bytes,
-                    schema=schema,
-                    host=c.POSTGRES_HOST,
-                    port=c.POSTGRES_PORT,
-                    user=c.POSTGRES_USER,
-                    password=c.POSTGRES_PASSWORD,
-                    database=c.POSTGRES_DB,
-                    dry_run=dry_run,
-                    known_settings=known_settings,
-                )
-                if result["return_code"] != 0 and not dry_run:
-                    return {"ok": False, "error": "psql failed",
-                            "artifact": artifact, "result": result}, 400
-        finally:
-            connection.close()
+        artifact, head_text = inspect_head(head, master_key, with_text=True)
     except ValueError as exc:
         log.warning("project_restore: rejected artifact for %s: %s", schema, exc)
         return {"ok": False, "error": str(exc)}, 400
-    except Exception as exc:  # pylint: disable=W0703
-        log.exception("project_restore: failed for %s", schema)
-        return {"ok": False, "error": "restore failed", "detail": str(exc)}, 500
-    finally:
-        if archive is not None:
-            archive.close()
-        if archive_spool is not None and archive_spool is not spool:
-            archive_spool.close()
-        spool.close()
+    artifact["filename"] = filename
     #
-    result["mode"] = "partial" if tables else "full"
-    return {"ok": True, "artifact": artifact, "result": result}, 200
+    # The dialog reads what a file carries as soon as it is picked; it only
+    # sends the first bytes, so the size is the one it reports
+    if inspect_only:
+        try:
+            artifact["size"] = int(_param("size") or len(head))
+        except ValueError:
+            artifact["size"] = len(head)
+        return {"ok": True, "inspect": True, "artifact": artifact}, 200
+    #
+    kind = artifact["kind"]
+    source_project = artifact.get("project_id")
+    if isinstance(source_project, int) and source_project != project_id \
+            and not allow_mismatch:
+        if allow_mismatch_override:
+            error = "artifact belongs to project {}; pass " \
+                    "allow_project_mismatch=true to restore it into project {}".format(
+                        source_project, project_id)
+        else:
+            error = "artifact belongs to project {} and can not be restored " \
+                    "into project {}".format(source_project, project_id)
+        return {"ok": False, "error": error, "artifact": artifact}, 409
+    #
+    # Entities coming from another project would stay attributed to its
+    # users, so ownership moves to whoever performs the restore. The owner
+    # columns that hold a project rather than a user move to this project.
+    #
+    current_user = auth.current_user()
+    current_user_id = current_user.get("id") if current_user else None
+    owner_user_id = None
+    owner_project_id = None
+    source_project_id = None
+    if isinstance(source_project, int) and source_project != project_id:
+        owner_user_id = current_user_id
+        owner_project_id = project_id
+        source_project_id = source_project
+    #
+    # The requested mode decides how the artifact is applied, so the detected
+    # kind has to agree with it: an unexpected file is reported instead of
+    # silently taking the other path.
+    if full_mode and kind != KIND_PG_DUMP:
+        return {
+            "ok": False,
+            "error": "this file is a redacted project backup, not a raw pg_dump;"
+                     " restore it in safe mode",
+            "artifact": artifact,
+        }, 400
+    #
+    if not full_mode and kind != KIND_SAFE:
+        return {
+            "ok": False,
+            "error": "this file is a raw pg_dump and can not be restored in safe mode",
+            "artifact": artifact,
+        }, 400
+    #
+    if full_mode and tables:
+        return {
+            "ok": False,
+            "error": "partial restore is not supported for pg_dump artifacts",
+        }, 400
+    #
+    # A plain pg_dump rebuilds the schema it was taken from: it carries its
+    # own CREATE SCHEMA, fully qualified names and a search_path reset, so
+    # the target search_path is ignored and the restore would recreate the
+    # source project instead of filling this one.
+    #
+    if full_mode:
+        dump_schema = pg_dump_schema(head_text)
+        artifact["dump_schema"] = dump_schema
+        #
+        if dump_schema is not None and dump_schema != schema:
+            return {
+                "ok": False,
+                "error": "this pg_dump rebuilds schema {} and can not be retargeted "
+                         "at {}; restore it in safe mode instead".format(
+                             dump_schema, schema),
+                "artifact": artifact,
+            }, 400
+    #
+    connection = context.db.engine.raw_connection()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "select 1 from information_schema.schemata where schema_name = %s",
+                (schema,),
+            )
+            if cursor.fetchone() is None:
+                return {"ok": False, "error": "project schema not found"}, 404
+        connection.rollback()
+    finally:
+        connection.close()
+    #
+    store = module.restore_job_store()
+    active = store.active(project_id)
+    if active is not None:
+        return {"ok": False, "error": "restore_in_progress", "job_id": active["id"]}, 409
+    #
+    # Everything the child needs from RPC or Vault is resolved here: the RPC
+    # node it inherits is not serviced in the forked process
+    with_chats = artifact.get("chats_included", chat_backup.CHATS_NONE) != chat_backup.CHATS_NONE \
+        and restore_chats != chat_backup.CHATS_NONE
+    storage = None
+    bucket, retention_days = None, None
+    if kind == KIND_SAFE and with_chats:
+        bucket, retention_days = _attachment_settings(project_id)
+        try:
+            storage = _storage_settings(project_id)
+        except Exception:  # pylint: disable=W0703
+            log.exception("project_restore: no storage client for project %s", project_id)
+            return {"ok": False, "error": "attachment storage is not available"}, 503
+    #
+    options = {
+        "schema": schema,
+        "mode": "full" if full_mode else "safe",
+        "tables": tables,
+        "include_parents": include_parents,
+        "truncate": truncate,
+        "dry_run": dry_run,
+        "restrict_tables": restrict_tables,
+        "restore_chats": restore_chats,
+        "owner_user_id": owner_user_id,
+        "owner_project_id": owner_project_id,
+        "source_project_id": source_project_id,
+        "member_user_ids": _project_member_ids(project_id) if kind == KIND_SAFE else None,
+        "chat_context": {
+            "restorer_id": current_user_id,
+            "source_project_id": source_project if isinstance(source_project, int) else None,
+            "target_project_id": project_id,
+        },
+        "attachment_bucket": bucket,
+        "attachment_retention_days": retention_days,
+    }
+    #
+    try:
+        spool_path, size = restore_runner.spool_upload(
+            _PrefixedStream(head, source.stream), module.restore_settings["spool_dir"],
+        )
+    except OSError:
+        log.exception("project_restore: could not spool the upload for %s", schema)
+        return {"ok": False, "error": "restore failed", "detail": "could not store the upload"}, 500
+    artifact["size"] = size
+    #
+    try:
+        job = store.create(
+            project_id=project_id, user_id=current_user_id, mode=options["mode"],
+            options=options, artifact=artifact, instance=_instance(),
+        )
+    except restore_jobs.RestoreInProgress as busy:
+        restore_runner.remove_spool(spool_path)
+        return {"ok": False, "error": "restore_in_progress", "job_id": busy.job_id}, 409
+    #
+    log.info(
+        "project_restore: starting job %s, %s artifact to %s (%s, dry_run=%s)",
+        job["id"], kind, schema, "partial" if tables else "full", dry_run,
+    )
+    #
+    if module.restore_workers.busy():
+        restore_runner.remove_spool(spool_path)
+        store.fail(job["id"], "restore_capacity_busy", 503)
+        return {
+            "ok": False, "error": "restore_capacity_busy",
+            "detail": "another restore is running on this server; retry in a minute",
+        }, 503
+    #
+    payload = {
+        "job_id": job["id"],
+        "spool_path": spool_path,
+        "job_schema": module.restore_job_schema,
+        "database": module.restore_worker_database(),
+        "settings": {
+            "max_archive_bytes": module.restore_settings["max_archive_bytes"],
+            "lock_timeout": module.restore_settings["lock_timeout"],
+        },
+        "master_key": master_key.decode("utf-8") if isinstance(master_key, bytes) else master_key,
+        "storage": storage,
+    }
+    try:
+        task_id = str(module.restore_workers.start(job["id"], payload, _on_worker_exit(module)))
+    except Exception:  # pylint: disable=W0703
+        log.exception("project_restore: could not start the worker for job %s", job["id"])
+        restore_runner.remove_spool(spool_path)
+        store.fail(job["id"], "restore failed", 500,
+                   {"ok": False, "error": "restore failed", "detail": "could not start the restore worker"})
+        return {"ok": False, "error": "restore failed", "detail": "could not start the restore worker"}, 500
+    store.attach_task(job["id"], task_id)
+    #
+    if wait:
+        return _wait_for_job(store, job["id"])
+    return {"ok": True, "job_id": job["id"], "status": restore_jobs.STATUS_RUNNING, "artifact": artifact}, 202
+
+
+def _on_worker_exit(module):
+    """ A worker that died without writing its result leaves the job failed """
+    def callback(job_id, return_code):
+        try:
+            job = module.restore_job_store().get(job_id)
+            if job is not None and job["status"] in restore_jobs.ACTIVE_STATUSES:
+                log.error("project_restore: worker of job %s exited with %s", job_id, return_code)
+                module.restore_job_store().fail(
+                    job_id, restore_jobs.STALE_ERROR, 500,
+                    {"ok": False, "error": "restore failed", "detail": restore_jobs.STALE_ERROR},
+                )
+        except Exception:  # pylint: disable=W0703
+            log.exception("project_restore: could not check job %s after its worker exited", job_id)
+    return callback
+
+
+def job_status(module, project_id, job_id):
+    job = module.restore_job_store().get(job_id, project_id=project_id)
+    if job is None:
+        return {"ok": False, "error": "restore job not found"}, 404
+    return restore_jobs.public_view(job), 200
 
 
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
@@ -556,8 +533,7 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         _ = kwargs
         #
         return apply_uploaded_backup(
-            project_id, policy=backup_crypto.handler_policy(self),
-            max_archive_bytes=_max_archive_bytes(self),
+            self.module, project_id, policy=backup_crypto.handler_policy(self),
         )
 
 
@@ -628,9 +604,8 @@ class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         # role_permission / user_role rows and grant itself permissions.
         #
         return apply_uploaded_backup(
-            project_id, allow_pg_dump=False, allow_mismatch_override=True,
+            self.module, project_id, allow_pg_dump=False, allow_mismatch_override=True,
             restrict_tables=True, policy=backup_crypto.handler_policy(self),
-            max_archive_bytes=_max_archive_bytes(self),
         )
 
 
