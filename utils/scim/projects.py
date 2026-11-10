@@ -498,6 +498,25 @@ class ProjectSync:
                 })
             return rows
 
+    def users_overview(self) -> list:
+        """ SCIM users with their ELITEA account, state and the groups they are direct members of """
+        with self.get_session() as session:
+            names = dict(session.execute(select(ScimGroup.id, ScimGroup.display_name).where(
+                ScimGroup.status != GROUP_REMOVED)).all())
+            groups = {}
+            for group_id, user_id in session.execute(select(ScimGroupMember.group_id, ScimGroupMember.user_id)):
+                if group_id in names:
+                    groups.setdefault(user_id, []).append(names[group_id])
+            users = session.scalars(select(ScimUser).order_by(ScimUser.deleted, ScimUser.user_name)).all()
+            return [{
+                "id": u.id, "user_name": u.user_name, "display_name": u.display_name, "email": u.email,
+                "external_id": u.external_id, "elitea_user_id": u.elitea_user_id,
+                "status": "deleted" if u.deleted else ("active" if u.active else "inactive"),
+                "suspended_by_scim": u.suspended_by_scim,
+                "groups": sorted(groups.get(u.id, [])),
+                "updated_at": u.updated_at.isoformat() if u.updated_at else None,
+            } for u in users]
+
     def pending_exists(self) -> bool:
         with self.get_session() as session:
             return session.scalars(select(ScimGroup.id).where(
