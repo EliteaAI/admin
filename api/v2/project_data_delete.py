@@ -37,20 +37,38 @@ PROJECT_DATA_DELETE_PERMISSION = "models.project_data.delete"
 
 COUNT_RPC_TIMEOUT = 30
 
+ADMIN_ROLE_NAMES = frozenset({"admin", "super_admin", "system"})
+
 RECOMMENDED_ROLES = {
     "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
     "default": {"super_admin": True, "admin": True, "viewer": False, "editor": True},
 }
 
 
+def _is_project_admin(project_id):
+    user_id = auth.current_user().get("id")
+    if not user_id:
+        return False
+    try:
+        role_ids = {item["role_id"] for item in auth.list_project_user_roles(project_id, user_id)}
+        return any(
+            role["id"] in role_ids and role["name"] in ADMIN_ROLE_NAMES
+            for role in auth.list_project_roles(project_id)
+        )
+    except Exception:  # pylint: disable=W0703
+        log.exception("project_data_delete: admin role lookup failed for user %s in project %s", user_id, project_id)
+        return False
+
+
 def _authorized(project_id):
     """ check_api lets project editors through (a private project's owner is one);
-        the delete permission or owning the project is required on top """
+        the delete permission with the admin role, or owning the project, is required on top """
     has_permission = auth.has_access(
         auth.resolve_permissions(mode=PROMPT_LIB_MODE, project_id=project_id),
         [PROJECT_DATA_DELETE_PERMISSION],
     )
-    return pdd.is_authorized(has_permission, not has_permission and _is_own_personal_project(project_id))
+    is_admin = has_permission and _is_project_admin(project_id)
+    return pdd.is_authorized(has_permission, is_admin, not is_admin and _is_own_personal_project(project_id))
 
 
 def _denied():

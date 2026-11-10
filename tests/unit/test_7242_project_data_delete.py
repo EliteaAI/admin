@@ -101,14 +101,15 @@ def test_credentials_section():
 
 # ---------- authorization ----------
 
-@pytest.mark.parametrize("has_permission, own_project, allowed", [
-    (True, False, True),
-    (False, True, True),
-    (True, True, True),
-    (False, False, False),
+@pytest.mark.parametrize("has_permission, is_admin, own_project, allowed", [
+    (True, True, False, True),
+    (True, False, False, False),
+    (False, False, True, True),
+    (True, False, True, True),
+    (False, False, False, False),
 ])
-def test_authorized_by_admin_permission_or_ownership(has_permission, own_project, allowed):
-    assert pdd.is_authorized(has_permission, own_project) is allowed
+def test_authorized_by_admin_permission_or_ownership(has_permission, is_admin, own_project, allowed):
+    assert pdd.is_authorized(has_permission, is_admin, own_project) is allowed
 
 
 # ---------- outcome ----------
