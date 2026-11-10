@@ -82,10 +82,10 @@ def visible_chat_ids_sql(schema, user_id):
     return chat_backup.conversation_scope_sql(schema, user_id)
 
 
-def is_authorized(has_permission, owns_project):
-    """ Team projects need the delete permission (admin); a private project is
-        authorized by ownership, its owner is never its admin """
-    return bool(has_permission or owns_project)
+def is_authorized(has_permission, is_admin, owns_project):
+    """ Team projects need the delete permission and the admin role, editors may hold the
+        permission (#6789); a private project is authorized by ownership, its owner is never its admin """
+    return bool((has_permission and is_admin) or owns_project)
 
 
 def type_result(result=None, unknown=False):
