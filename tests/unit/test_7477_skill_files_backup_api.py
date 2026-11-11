@@ -345,18 +345,81 @@ def _skill_zip(utils, chats_included=None, project_id=2):
     ))
 
 
+class FakeJobStore:
+    """ The job row a restore request creates, kept in memory """
+
+    def __init__(self):
+        self.jobs = {}
+
+    def active(self, project_id):
+        return None
+
+    def create(self, project_id, user_id, mode, options, artifact, instance):
+        job = {"id": "job-1", "project_id": project_id, "user_id": user_id, "mode": mode,
+               "options": options, "artifact": artifact, "instance": instance}
+        self.jobs[job["id"]] = job
+        return job
+
+    def attach_task(self, job_id, task_id):
+        pass
+
+    def fail(self, job_id, *args, **kwargs):
+        raise AssertionError("the restore request failed its job: {}".format(args))
+
+
+class FakeWorkers:
+    """ Takes the worker start: the test runs the worker side itself """
+
+    def __init__(self):
+        self.started = []
+
+    def busy(self):
+        return False
+
+    def start(self, job_id, payload, on_exit):
+        self.started.append(payload)
+        return 1
+
+
 def _upload(endpoints, data, result=None, **form):
+    """ A restore end to end: the request starts the job, then the worker applies it
+
+    Returns the body and status the job ends with - the response of a restore
+    that waits for its job - and the arguments restore_safe_backup got.
+    """
     captured = {}
 
     def restore_safe_backup(connection, **kwargs):
         captured.update(kwargs)
         return dict(result or {})
-    endpoints.restore.restore_safe_backup = restore_safe_backup
+    runner = endpoints.restore.restore_runner
+    runner.restore_safe_backup = restore_safe_backup
+    # The request hands the worker storage settings; the worker side gets the storage itself
+    endpoints.restore._storage_settings = lambda project_id: {"project_id": project_id}  # pylint: disable=W0212
     endpoints.state.connection = FakeConnection([("information_schema.schemata", [(1,)])])
     endpoints.flask.request.form = dict(form)
     endpoints.flask.request.files = {"file": types.SimpleNamespace(filename="backup.zip", stream=io.BytesIO(data))}
-    body, status = endpoints.restore.apply_uploaded_backup(2)
-    return body, status, captured
+    #
+    store, workers = FakeJobStore(), FakeWorkers()
+    spool_dir = runner.spool_dir({})
+    module = types.SimpleNamespace(
+        restore_job_store=lambda: store, restore_workers=workers, restore_job_schema="centry",
+        restore_settings={"spool_dir": spool_dir, "max_archive_bytes": 10 ** 9, "lock_timeout": "30s"},
+        restore_worker_database=lambda: {},
+    )
+    body, status = endpoints.restore.apply_uploaded_backup(module, 2)
+    if status != 202:
+        return body, status, captured
+    #
+    payload = workers.started[0]
+    try:
+        body = runner.apply_job(
+            endpoints.state.connection, store.jobs[payload["job_id"]], payload["spool_path"], None,
+            endpoints.state.storage, max_archive_bytes=10 ** 9, lock_timeout="30s",
+        )
+    finally:
+        runner.remove_spool(payload["spool_path"])
+    return body, 200, captured
 
 
 def test_restore_of_a_zip_hands_the_archive_to_the_skill_file_restorer(endpoints):
