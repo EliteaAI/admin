@@ -70,20 +70,27 @@ def spool_dir(config):
     return path
 
 
-def spool_upload(stream, directory):
-    """ Upload copied to a named file the child can reopen, (path, size) """
+def copy_stream(stream, target=None):
+    """ Read a stream to its end, writing it to target when given, return the bytes read """
+    size = 0
+    while True:
+        chunk = stream.read(READ_CHUNK)
+        if not chunk:
+            return size
+        if target is not None:
+            target.write(chunk)
+        size += len(chunk)
+
+
+def spool_upload(head, stream, directory):
+    """ The upload (head already read, then the rest of stream) in a named file the worker can reopen, (path, size) """
     handle = tempfile.NamedTemporaryFile(  # pylint: disable=R1732
         dir=directory, prefix="restore_", suffix=".bin", delete=False,
     )
-    size = 0
     try:
         with handle:
-            while True:
-                chunk = stream.read(READ_CHUNK)
-                if not chunk:
-                    break
-                handle.write(chunk)
-                size += len(chunk)
+            handle.write(head)
+            size = len(head) + copy_stream(stream, handle)
     except Exception:
         remove_spool(handle.name)
         raise
@@ -203,7 +210,6 @@ def apply_job(  # pylint: disable=R0912,R0913,R0914,R0915
     options = job["options"]
     artifact = job["artifact"]
     schema = options["schema"]
-    full_mode = options["mode"] == "full"
     dry_run = options.get("dry_run", False)
     #
     archive = None
@@ -315,14 +321,20 @@ def apply_job(  # pylint: disable=R0912,R0913,R0914,R0915
 class Workers:
     """ Restore worker processes of this pylon, at most `limit` at a time
 
-    A worker must not outlive its pylon: once its job is failed (on the next
-    boot or by the reaper) the project is free, and a retry would restore it
-    twice at once. The worker exits when the pylon end of its pipe closes, and
-    stop_all() kills the ones still running when the pylon stops.
+    A slot is taken when a request passes the capacity check, before its
+    upload is spooled: the spool yields to other requests, so a check alone
+    would let two of them through. The slot is released when the request
+    fails or its worker exits.
+
+    A worker must not outlive its pylon: once the reaper fails its job the
+    project is free, and a retry would restore it twice at once. The worker
+    exits when its pylon is gone, and stop_all() kills the ones still running
+    when the pylon stops.
     """
 
     def __init__(self, limit):
         self.limit = limit
+        self.slots = 0
         self.running = {}  # job_id -> Popen
 
     def stop_all(self):
@@ -331,12 +343,18 @@ class Workers:
                 log.warning("project_restore: stopping the worker of job %s", job_id)
                 kill_worker(process.pid)
 
-    def busy(self):
-        self.running = {key: process for key, process in self.running.items() if process.poll() is None}
-        return len(self.running) >= self.limit
+    def reserve(self):
+        """ Take a slot, False when all are in use; no switch to another request in between """
+        if self.slots >= self.limit:
+            return False
+        self.slots += 1
+        return True
+
+    def release(self):
+        self.slots = max(self.slots - 1, 0)
 
     def start(self, job_id, payload, on_exit, open_storage=None):
-        """ Start the worker for a job; on_exit(job_id, return_code) runs once it ends
+        """ Start the worker for a job in a reserved slot; on_exit(job_id, return_code) runs once it ends
 
         The worker reads its payload as the first stdin line, then talks to
         the storage served here: requests on its stdout, replies on its stdin.
@@ -373,6 +391,7 @@ class Workers:
             return_code = process.wait()
             _register_external_pid(process.pid, present=False)
             self.running.pop(job_id, None)
+            self.release()
             on_exit(job_id, return_code)
         #
         import threading  # pylint: disable=C0415
@@ -387,15 +406,6 @@ def kill_worker(pid):
         os.killpg(pid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
         pass
-
-
-def worker_alive(pid):
-    """ Whether pid is still a running restore worker (not a recycled pid) """
-    try:
-        with open("/proc/{}/cmdline".format(int(pid)), "rb") as source:
-            return os.path.basename(WORKER_PATH).encode() in source.read()
-    except (OSError, ValueError, TypeError):
-        return False
 
 
 def watch_parent(interval=2):

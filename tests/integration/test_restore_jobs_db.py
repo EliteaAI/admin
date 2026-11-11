@@ -82,8 +82,7 @@ def jobs(database):
 
 
 def _create(store, project_id=12, **kwargs):
-    defaults = {"user_id": 3, "mode": "safe", "options": {"truncate": True}, "artifact": {"kind": "safe"},
-                "instance": "pod-a"}
+    defaults = {"user_id": 3, "mode": "safe", "options": {"truncate": True}, "artifact": {"kind": "safe"}}
     defaults.update(kwargs)
     return store.create(project_id=project_id, **defaults)
 
@@ -122,7 +121,7 @@ def test_other_projects_are_not_blocked(jobs):
 def test_a_finished_job_frees_the_project(jobs):
     store, _ = jobs
     first = _create(store)
-    store.start(first["id"], task_id="t1")
+    store.start(first["id"])
     store.finish(first["id"], result={"total_rows": 5}, status_code=200)
     second = _create(store)
     assert second["id"] != first["id"]
@@ -131,7 +130,7 @@ def test_a_finished_job_frees_the_project(jobs):
 def test_lifecycle_done(jobs):
     store, _ = jobs
     job = _create(store)
-    store.start(job["id"], task_id="t1")
+    store.start(job["id"])
     running = store.get(job["id"])
     assert running["status"] == rj.STATUS_RUNNING
     assert running["started_at"] is not None
@@ -147,7 +146,7 @@ def test_lifecycle_done(jobs):
 def test_lifecycle_failed_keeps_the_response_body(jobs):
     store, _ = jobs
     job = _create(store)
-    store.start(job["id"], task_id="t1")
+    store.start(job["id"])
     store.fail(job["id"], error="insert failed on tags", status_code=400, body={"ok": False, "error": "x"})
     failed = store.get(job["id"])
     assert failed["status"] == rj.STATUS_FAILED
@@ -159,7 +158,7 @@ def test_lifecycle_failed_keeps_the_response_body(jobs):
 def test_finish_does_not_resurrect_a_reaped_job(jobs):
     store, connection = jobs
     job = _create(store)
-    store.start(job["id"], task_id="t1")
+    store.start(job["id"])
     _set(connection, job["id"], heartbeat_at="now() - interval '1 hour'")
     store.reap(stale_after_seconds=600, retention_days=7)
     store.finish(job["id"], result={}, status_code=200)
@@ -169,12 +168,12 @@ def test_finish_does_not_resurrect_a_reaped_job(jobs):
 def test_reap_fails_stale_running_and_queued_jobs(jobs):
     store, connection = jobs
     running = _create(store, project_id=1)
-    store.start(running["id"], task_id="t1")
+    store.start(running["id"])
     _set(connection, running["id"], heartbeat_at="now() - interval '11 minutes'")
     queued = _create(store, project_id=2)
     _set(connection, queued["id"], created_at="now() - interval '11 minutes'")
     fresh = _create(store, project_id=3)
-    store.start(fresh["id"], task_id="t3")
+    store.start(fresh["id"])
     #
     summary = store.reap(stale_after_seconds=600, retention_days=7)
     assert summary["failed"] == 2
@@ -198,18 +197,6 @@ def test_reap_deletes_finished_jobs_past_retention(jobs):
     assert summary["deleted"] == 1
     assert store.get(old["id"]) is None
     assert store.get(recent["id"]) is not None
-
-
-def test_fail_instance_jobs_on_startup(jobs):
-    store, _ = jobs
-    mine = _create(store, project_id=1, instance="pod-a")
-    store.start(mine["id"], task_id="t1")
-    other = _create(store, project_id=2, instance="pod-b")
-    store.start(other["id"], task_id="t2")
-    #
-    assert store.fail_instance_jobs("pod-a") == 1
-    assert store.get(mine["id"])["status"] == rj.STATUS_FAILED
-    assert store.get(other["id"])["status"] == rj.STATUS_RUNNING
 
 
 def test_job_is_scoped_to_its_project(jobs):
