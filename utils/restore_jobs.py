@@ -40,7 +40,7 @@ STALE_ERROR = "restore process stopped before it finished"
 
 COLUMNS = (
     "id", "project_id", "user_id", "mode", "status", "options", "artifact", "result",
-    "error", "status_code", "instance", "task_id",
+    "error", "status_code",
     "created_at", "started_at", "finished_at", "heartbeat_at",
 )
 
@@ -56,8 +56,6 @@ CREATE TABLE IF NOT EXISTS {table} (
     result jsonb,
     error text,
     status_code integer,
-    instance varchar(256),
-    task_id varchar(128),
     created_at timestamptz NOT NULL DEFAULT now(),
     started_at timestamptz,
     finished_at timestamptz,
@@ -134,15 +132,15 @@ class JobStore:
             if self.release is not None:
                 self.release(connection)
 
-    def create(self, project_id, user_id, mode, options, artifact, instance):
+    def create(self, project_id, user_id, mode, options, artifact):
         job_id = str(uuid.uuid4())
         try:
             record = self._execute(
-                "INSERT INTO {table} (id, project_id, user_id, mode, status, options, artifact, instance)"
-                " VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s)"
+                "INSERT INTO {table} (id, project_id, user_id, mode, status, options, artifact)"
+                " VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)"
                 " RETURNING " + ", ".join(COLUMNS),
                 (job_id, project_id, user_id, mode, STATUS_QUEUED,
-                 json.dumps(options or {}), json.dumps(artifact), instance),
+                 json.dumps(options or {}), json.dumps(artifact)),
                 fetch="one",
             )
         except psycopg2.errors.UniqueViolation:  # pylint: disable=E1101
@@ -165,15 +163,12 @@ class JobStore:
             (project_id, ACTIVE_STATUSES), fetch="one",
         ))
 
-    def attach_task(self, job_id, task_id):
-        self._execute("UPDATE {table} SET task_id = %s WHERE id = %s", (task_id, job_id))
-
-    def start(self, job_id, task_id=None):
+    def start(self, job_id):
         """ Mark the job running, False when it is no longer queued """
         return self._execute(
-            "UPDATE {table} SET status = %s, task_id = COALESCE(%s, task_id),"
-            " started_at = now(), heartbeat_at = now() WHERE id = %s AND status = %s",
-            (STATUS_RUNNING, task_id, job_id, STATUS_QUEUED),
+            "UPDATE {table} SET status = %s, started_at = now(), heartbeat_at = now()"
+            " WHERE id = %s AND status = %s",
+            (STATUS_RUNNING, job_id, STATUS_QUEUED),
         ) > 0
 
     def heartbeat(self, job_id):
@@ -195,22 +190,6 @@ class JobStore:
             "UPDATE {table} SET status = %s, error = %s, status_code = %s, result = %s::jsonb,"
             " finished_at = now() WHERE id = %s AND status IN %s",
             (STATUS_FAILED, error, status_code, json.dumps(body), job_id, ACTIVE_STATUSES),
-        )
-
-    def instance_jobs(self, instance):
-        """ Active jobs started by this instance """
-        rows = self._execute(
-            "SELECT " + ", ".join(COLUMNS) + " FROM {table} WHERE instance = %s AND status IN %s",
-            (instance, ACTIVE_STATUSES), fetch="all",
-        )
-        return [_row(row) for row in rows or []]
-
-    def fail_instance_jobs(self, instance):
-        """ Jobs a restarted pod was running can not finish any more """
-        return self._execute(
-            "UPDATE {table} SET status = %s, error = %s, status_code = 500, finished_at = now()"
-            " WHERE instance = %s AND status IN %s",
-            (STATUS_FAILED, STALE_ERROR, instance, ACTIVE_STATUSES),
         )
 
     def reap(self, stale_after_seconds, retention_days):

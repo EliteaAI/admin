@@ -354,14 +354,11 @@ class FakeJobStore:
     def active(self, project_id):
         return None
 
-    def create(self, project_id, user_id, mode, options, artifact, instance):
+    def create(self, project_id, user_id, mode, options, artifact):
         job = {"id": "job-1", "project_id": project_id, "user_id": user_id, "mode": mode,
-               "options": options, "artifact": artifact, "instance": instance}
+               "options": options, "artifact": artifact}
         self.jobs[job["id"]] = job
         return job
-
-    def attach_task(self, job_id, task_id):
-        pass
 
     def fail(self, job_id, *args, **kwargs):
         raise AssertionError("the restore request failed its job: {}".format(args))
@@ -370,11 +367,19 @@ class FakeJobStore:
 class FakeWorkers:
     """ Takes the worker start: the test runs the worker side itself """
 
-    def __init__(self):
+    def __init__(self, limit=1):
         self.started = []
+        self.limit = limit
+        self.slots = 0
 
-    def busy(self):
-        return False
+    def reserve(self):
+        if self.slots >= self.limit:
+            return False
+        self.slots += 1
+        return True
+
+    def release(self):
+        self.slots -= 1
 
     def start(self, job_id, payload, on_exit, open_storage=None):
         self.started.append(dict(payload, open_storage=open_storage))
@@ -472,12 +477,12 @@ def test_skill_files_zip_with_chats_but_no_attachment_files_only_relinks_attachm
     assert captured["restore_chats"] == "without_attachments"
 
 
-def _request(endpoints, data, **form):
+def _request(endpoints, data, workers=None, **form):
     """ The restore request alone, against an in-memory job store and worker pool """
     endpoints.state.connection = FakeConnection([("information_schema.schemata", [(1,)])])
     endpoints.flask.request.form = dict(form)
     endpoints.flask.request.files = {"file": types.SimpleNamespace(filename="backup.sql", stream=io.BytesIO(data))}
-    store, workers = FakeJobStore(), FakeWorkers()
+    store, workers = FakeJobStore(), workers or FakeWorkers()
     runner = endpoints.restore.restore_runner
     module = types.SimpleNamespace(
         restore_job_store=lambda: store, restore_workers=workers, restore_job_schema="centry",
@@ -528,10 +533,42 @@ def test_a_busy_pod_refuses_before_writing_the_upload_to_disk(endpoints, monkeyp
         filename="backup.sql", stream=io.BytesIO(_sql_header(endpoints.utils).encode("utf-8")))}
     store = FakeJobStore()
     module = types.SimpleNamespace(
-        restore_job_store=lambda: store, restore_workers=types.SimpleNamespace(busy=lambda: True),
+        restore_job_store=lambda: store, restore_workers=FakeWorkers(limit=0),
         restore_job_schema="centry", restore_settings={}, restore_worker_database=lambda: {},
     )
     body, status = endpoints.restore.apply_uploaded_backup(module, 2)
     assert status == 503 and body["error"] == "restore_capacity_busy"
     assert spooled == [] and store.jobs == {}
+
+
+def test_a_second_request_can_not_take_the_slot_while_the_first_spools(endpoints, monkeypatch):
+    """ The spool yields to other requests: the slot is taken before it, not checked """
+    workers = FakeWorkers(limit=1)
+    runner = endpoints.restore.restore_runner
+    real_spool = runner.spool_upload
+    seen = []
+
+    def spool_while_another_request_arrives(head, stream, directory):
+        # What gevent would run while this request writes the upload to disk
+        (body, status), _, _ = _request(endpoints, _sql_header(endpoints.utils).encode("utf-8"),
+                                        workers=workers, background="true")
+        seen.append(status)
+        return real_spool(head, stream, directory)
+    monkeypatch.setattr(runner, "spool_upload", spool_while_another_request_arrives)
+    (body, status), _, _ = _request(endpoints, _sql_header(endpoints.utils).encode("utf-8"),
+                                    workers=workers, background="true")
+    assert status == 202
+    assert seen == [503]
+    assert len(workers.started) == 1 and workers.slots == 1
+    runner.remove_spool(workers.started[0]["spool_path"])
+
+
+def test_a_failed_request_gives_its_slot_back(endpoints, monkeypatch):
+    workers = FakeWorkers(limit=1)
+    monkeypatch.setattr(endpoints.restore.restore_runner, "spool_upload",
+                        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk full")))
+    (body, status), _, _ = _request(endpoints, _sql_header(endpoints.utils).encode("utf-8"),
+                                    workers=workers, background="true")
+    assert status == 500
+    assert workers.slots == 0
 

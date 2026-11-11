@@ -147,11 +147,6 @@ def _storage_client(project_id):
     return MinioClient.from_project_id(project_id)
 
 
-def _instance():
-    """ Stable across restarts of the same pod, unlike context.id """
-    return getattr(context, "node_name", None) or "pylon"
-
-
 def _read_upload_head(source):
     """ First bytes of the upload, and the stream positioned after them """
     head = bytearray()
@@ -161,30 +156,6 @@ def _read_upload_head(source):
             break
         head += chunk
     return bytes(head)
-
-
-def _drain(stream):
-    """ Bytes left in the upload stream, read and discarded """
-    size = 0
-    while True:
-        chunk = stream.read(restore_runner.READ_CHUNK)
-        if not chunk:
-            return size
-        size += len(chunk)
-
-
-class _PrefixedStream:  # pylint: disable=R0903
-    """ The upload stream with the bytes already read put back in front """
-
-    def __init__(self, prefix, stream):
-        self.prefix = prefix
-        self.stream = stream
-
-    def read(self, size=-1):
-        if self.prefix:
-            data, self.prefix = self.prefix[:size], self.prefix[size:]
-            return data
-        return self.stream.read(size)
 
 
 def _wait_for_job(store, job_id):
@@ -286,7 +257,7 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0913,R0914,R0915
         try:
             artifact["size"] = int(_param("size"))
         except ValueError:
-            artifact["size"] = len(head) + _drain(source.stream)
+            artifact["size"] = len(head) + restore_runner.copy_stream(source.stream)
         return {"ok": True, "inspect": True, "artifact": artifact}, 200
     #
     kind = artifact["kind"]
@@ -375,95 +346,102 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0913,R0914,R0915
     active = store.active(project_id)
     if active is not None:
         return {"ok": False, "error": "restore_in_progress", "job_id": active["id"]}, 409
-    # Checked before the upload is written to disk: a busy pod refuses at once
-    if module.restore_workers.busy():
+    # A slot is taken before the upload is written to disk: a busy pod refuses
+    # at once, and two requests can not both pass while one is spooling
+    workers = module.restore_workers
+    if not workers.reserve():
         return {
             "ok": False, "error": "restore_capacity_busy",
             "detail": "another restore is running on this server; retry in a minute",
         }, 503
-    #
-    # Everything the worker needs from RPC or Vault is resolved here: it does
-    # not call RPC. Its storage calls (chat attachments, the skill files a safe
-    # restore re-uploads) are served by this pylon on MinioClient.
-    with_chats = artifact.get("chats_included", chat_backup.CHATS_NONE) != chat_backup.CHATS_NONE \
-        and restore_chats != chat_backup.CHATS_NONE
-    bucket, retention_days = None, None
-    if kind == KIND_SAFE and with_chats:
-        bucket, retention_days = _attachment_settings(project_id)
-    #
-    options = {
-        "schema": schema,
-        "mode": "full" if full_mode else "safe",
-        "tables": tables,
-        "include_parents": include_parents,
-        "truncate": truncate,
-        "dry_run": dry_run,
-        "restrict_tables": restrict_tables,
-        "restore_chats": restore_chats,
-        "owner_user_id": owner_user_id,
-        "owner_project_id": owner_project_id,
-        "source_project_id": source_project_id,
-        "member_user_ids": _project_member_ids(project_id) if kind == KIND_SAFE else None,
-        "chat_context": {
-            "restorer_id": current_user_id,
-            "source_project_id": source_project if isinstance(source_project, int) else None,
-            "target_project_id": project_id,
-        },
-        "attachment_bucket": bucket,
-        "attachment_retention_days": retention_days,
-    }
-    #
+    started = False
     try:
-        spool_path, size = restore_runner.spool_upload(
-            _PrefixedStream(head, source.stream), module.restore_settings["spool_dir"],
+        # Everything the worker needs from RPC or Vault is resolved here: it does
+        # not call RPC. Its storage calls (chat attachments, the skill files a safe
+        # restore re-uploads) are served by this pylon on MinioClient.
+        with_chats = artifact.get("chats_included", chat_backup.CHATS_NONE) != chat_backup.CHATS_NONE \
+            and restore_chats != chat_backup.CHATS_NONE
+        bucket, retention_days = None, None
+        if kind == KIND_SAFE and with_chats:
+            bucket, retention_days = _attachment_settings(project_id)
+        #
+        options = {
+            "schema": schema,
+            "mode": "full" if full_mode else "safe",
+            "tables": tables,
+            "include_parents": include_parents,
+            "truncate": truncate,
+            "dry_run": dry_run,
+            "restrict_tables": restrict_tables,
+            "restore_chats": restore_chats,
+            "owner_user_id": owner_user_id,
+            "owner_project_id": owner_project_id,
+            "source_project_id": source_project_id,
+            "member_user_ids": _project_member_ids(project_id) if kind == KIND_SAFE else None,
+            "chat_context": {
+                "restorer_id": current_user_id,
+                "source_project_id": source_project if isinstance(source_project, int) else None,
+                "target_project_id": project_id,
+            },
+            "attachment_bucket": bucket,
+            "attachment_retention_days": retention_days,
+        }
+        #
+        try:
+            spool_path, size = restore_runner.spool_upload(
+                head, source.stream, module.restore_settings["spool_dir"],
+            )
+        except OSError:
+            log.exception("project_restore: could not spool the upload for %s", schema)
+            return {"ok": False, "error": "restore failed", "detail": "could not store the upload"}, 500
+        artifact["size"] = size
+        #
+        try:
+            job = store.create(
+                project_id=project_id, user_id=current_user_id, mode=options["mode"],
+                options=options, artifact=artifact,
+            )
+        except restore_jobs.RestoreInProgress as busy:
+            restore_runner.remove_spool(spool_path)
+            return {"ok": False, "error": "restore_in_progress", "job_id": busy.job_id}, 409
+        #
+        log.info(
+            "project_restore: starting job %s, %s artifact to %s (%s, dry_run=%s)",
+            job["id"], kind, schema, "partial" if tables else "full", dry_run,
         )
-    except OSError:
-        log.exception("project_restore: could not spool the upload for %s", schema)
-        return {"ok": False, "error": "restore failed", "detail": "could not store the upload"}, 500
-    artifact["size"] = size
-    #
-    try:
-        job = store.create(
-            project_id=project_id, user_id=current_user_id, mode=options["mode"],
-            options=options, artifact=artifact, instance=_instance(),
-        )
-    except restore_jobs.RestoreInProgress as busy:
-        restore_runner.remove_spool(spool_path)
-        return {"ok": False, "error": "restore_in_progress", "job_id": busy.job_id}, 409
-    #
-    log.info(
-        "project_restore: starting job %s, %s artifact to %s (%s, dry_run=%s)",
-        job["id"], kind, schema, "partial" if tables else "full", dry_run,
-    )
-    #
-    payload = {
-        "job_id": job["id"],
-        "spool_path": spool_path,
-        "job_schema": module.restore_job_schema,
-        "database": module.restore_worker_database(),
-        "settings": {
-            "max_archive_bytes": module.restore_settings["max_archive_bytes"],
-            "lock_timeout": module.restore_settings["lock_timeout"],
-        },
-        "master_key": master_key.decode("utf-8") if isinstance(master_key, bytes) else master_key,
-        "with_storage": kind == KIND_SAFE,
-    }
-    try:
-        task_id = str(module.restore_workers.start(
-            job["id"], payload, _on_worker_exit(module), open_storage=lambda: _storage_client(project_id),
-        ))
-    except Exception:  # pylint: disable=W0703
-        log.exception("project_restore: could not start the worker for job %s", job["id"])
-        restore_runner.remove_spool(spool_path)
-        store.fail(job["id"], "restore failed", 500,
-                   {"ok": False, "error": "restore failed", "detail": "could not start the restore worker"})
-        return {"ok": False, "error": "restore failed", "detail": "could not start the restore worker"}, 500
-    store.attach_task(job["id"], task_id)
-    #
-    if wait:
-        return _wait_for_job(store, job["id"])
-    return {"ok": True, "job_id": job["id"], "status": restore_jobs.STATUS_RUNNING, "artifact": artifact}, 202
+        #
+        payload = {
+            "job_id": job["id"],
+            "spool_path": spool_path,
+            "job_schema": module.restore_job_schema,
+            "database": module.restore_worker_database(),
+            "settings": {
+                "max_archive_bytes": module.restore_settings["max_archive_bytes"],
+                "lock_timeout": module.restore_settings["lock_timeout"],
+            },
+            "master_key": master_key.decode("utf-8") if isinstance(master_key, bytes) else master_key,
+            "with_storage": kind == KIND_SAFE,
+        }
+        try:
+            workers.start(
+                job["id"], payload, _on_worker_exit(module), open_storage=lambda: _storage_client(project_id),
+            )
+            started = True
+        except Exception:  # pylint: disable=W0703
+            log.exception("project_restore: could not start the worker for job %s", job["id"])
+            restore_runner.remove_spool(spool_path)
+            store.fail(job["id"], "restore failed", 500,
+                       {"ok": False, "error": "restore failed", "detail": "could not start the restore worker"})
+            return {"ok": False, "error": "restore failed", "detail": "could not start the restore worker"}, 500
+        #
+        if wait:
+            return _wait_for_job(store, job["id"])
+        return {"ok": True, "job_id": job["id"], "status": restore_jobs.STATUS_RUNNING, "artifact": artifact}, 202
 
+    finally:
+        # The slot belongs to the worker once it runs; it is freed when the worker exits
+        if not started:
+            workers.release()
 
 def _on_worker_exit(module):
     """ A worker that died without writing its result leaves the job failed """

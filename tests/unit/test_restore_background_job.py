@@ -475,18 +475,20 @@ class TestWorkerProcess:
 # ---------- worker storage served by the pylon ----------
 
 
+def _restore_storage():
+    spec = importlib.util.spec_from_file_location(PACKAGE + ".restore_storage", UTILS_PATH / "restore_storage.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 class TestStorageChannel:
     """ The worker's storage calls run on the client the pylon serves them with """
 
-    def _load(self):
-        spec = importlib.util.spec_from_file_location(PACKAGE + ".restore_storage", UTILS_PATH / "restore_storage.py")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
 
     def test_calls_round_trip_through_a_real_pipe(self):
         import threading  # pylint: disable=C0415
-        rs = self._load()
+        rs = _restore_storage()
         storage = FakeStorage({("attachments", "old.txt"): b"x"})
         to_pylon_r, to_pylon_w = os.pipe()
         to_worker_r, to_worker_w = os.pipe()
@@ -511,7 +513,7 @@ class TestStorageChannel:
         assert not server.is_alive()
 
     def test_a_failed_call_raises_in_the_worker(self):
-        rs = self._load()
+        rs = _restore_storage()
 
         class Broken(FakeStorage):
             def list_files(self, bucket):
@@ -524,7 +526,7 @@ class TestStorageChannel:
             proxy.list_files("b")
 
     def test_only_restore_calls_are_served(self):
-        rs = self._load()
+        rs = _restore_storage()
         replies = io.BytesIO()
         rs.serve(lambda: FakeStorage(), io.StringIO(json.dumps({"method": "remove_bucket", "kwargs": {}}) + "\n"),
                  replies)
@@ -536,16 +538,11 @@ class TestStorageChannel:
 
 class TestReviewFixes:
 
-    def _rs(self):
-        spec = importlib.util.spec_from_file_location(PACKAGE + ".restore_storage", UTILS_PATH / "restore_storage.py")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
 
     def test_storage_results_that_are_not_json_travel_as_text(self):
         """ S3 answers carry datetimes; they must not turn into None (an empty bucket) """
         import datetime  # pylint: disable=C0415
-        rs = self._rs()
+        rs = _restore_storage()
 
         class S3Like(FakeStorage):
             def list_files(self, bucket):

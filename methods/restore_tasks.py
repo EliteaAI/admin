@@ -62,26 +62,13 @@ class Method:  # pylint: disable=E1101,R0903
         finally:
             connection.close()
         #
-        # Jobs this instance was running before a restart can not finish. A
-        # worker that survived it (it exits within seconds of losing its pylon,
-        # but may not have yet) is stopped first: failing the job frees the
-        # project, and the old worker must not restore it alongside a retry.
-        store = self.restore_job_store()
-        for job in store.instance_jobs(context.node_name):
-            if job["task_id"] and restore_runner.worker_alive(job["task_id"]):
-                log.warning("project_restore: stopping the leftover worker of job %s", job["id"])
-                restore_runner.kill_worker(int(job["task_id"]))
-        failed = store.fail_instance_jobs(context.node_name)
-        if failed:
-            log.warning("project_restore: marked %s interrupted restore job(s) failed", failed)
-        #
         self.restore_workers = restore_runner.Workers(
             int(config.get("restore_task_limit", DEFAULT_TASK_LIMIT)),
         )
 
     @web.deinit()
     def _restore_tasks_deinit(self):
-        # A worker can not finish without this pylon: its job is failed on the next boot
+        # A worker can not finish without this pylon: the reaper fails its job
         self.restore_workers.stop_all()
 
     @web.method()
