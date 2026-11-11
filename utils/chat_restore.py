@@ -488,6 +488,11 @@ class AttachmentRestorer:  # pylint: disable=R0902
     with_files=False only keeps the messages whose file the target bucket
     already has. Uploaded objects are removed again when the restore does not
     commit (dry run, or a failure afterwards).
+
+    prepare() uploads the files before the restore transaction opens, so no
+    table lock is held while storage is slow; the call inside the transaction
+    then only re-links. Files no restored message ended up pointing at are
+    dropped by release_unused() after the commit.
     """
 
     def __init__(  # pylint: disable=R0913
@@ -505,6 +510,8 @@ class AttachmentRestorer:  # pylint: disable=R0902
         self.listings = {}
         self.bucket_ready = False
         self.uploaded = []
+        self.prepared = None
+        self.used = set()
 
     def _names(self, bucket):
         """ name -> size of the files a target bucket holds """
@@ -540,12 +547,33 @@ class AttachmentRestorer:  # pylint: disable=R0902
         self.uploaded.append((self.bucket, name))
         return self.bucket, name
 
-    def cleanup(self):
-        for bucket, name in self.uploaded:
+    def prepare(self, dry_run):
+        """ Upload every file of the archive ahead of the transaction """
+        self.prepared = {}
+        if not self.with_files:
+            return
+        for key in self.files:
+            item = {"bucket": key[0], "name": key[1]}
+            try:
+                # A preview only checks the archive has the file
+                self.prepared[key] = key if dry_run else self._upload(item)
+            except Exception:  # pylint: disable=W0703
+                self.prepared[key] = None
+
+    def _remove(self, files):
+        for bucket, name in files:
             try:
                 self.client.remove_file(bucket, name)
             except Exception:  # pylint: disable=W0703
                 pass
+
+    def cleanup(self):
+        self._remove(self.uploaded)
+        self.uploaded = []
+
+    def release_unused(self):
+        """ After the commit: remove uploads no restored message points at """
+        self._remove([target for target in self.uploaded if target not in self.used])
         self.uploaded = []
 
     def __call__(self, cursor, attachments, dry_run):
@@ -558,8 +586,10 @@ class AttachmentRestorer:  # pylint: disable=R0902
             try:
                 if self.with_files:
                     if key not in uploads:
+                        if self.prepared is not None:
+                            uploads[key] = self.prepared.get(key)
                         # A preview only checks the archive has the file
-                        if dry_run:
+                        elif dry_run:
                             uploads[key] = key if key in self.files else None
                         else:
                             uploads[key] = self._upload(item)
@@ -577,6 +607,7 @@ class AttachmentRestorer:  # pylint: disable=R0902
                 summary["failed_names"].append(item["name"].rsplit("/", 1)[-1])
                 replace_with_placeholder(cursor, item)
             else:
+                self.used.add(tuple(target))
                 relink_attachment(cursor, item, target[0], target[1])
         #
         summary["failed_names"] = summary["failed_names"][:50]

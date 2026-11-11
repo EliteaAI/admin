@@ -389,6 +389,19 @@ class Module(module.ModuleModel):
             })
         except Exception:  # pylint: disable=W0703
             log.warning("Could not register token rotation schedule", exc_info=True)
+        #
+        # Schedule: restore jobs left behind by a process that died
+        #
+        try:
+            self.context.rpc_manager.timeout(5).scheduling_create_if_not_exists({
+                'name': 'project_restore_jobs_reap',
+                'cron': '*/5 * * * *',
+                'rpc_func': 'admin_project_restore_jobs_reap',
+                'rpc_kwargs': {},
+                'active': True,
+            })
+        except Exception:  # pylint: disable=W0703
+            log.warning("Could not register restore jobs reap schedule", exc_info=True)
 
         self._register_openapi()
 
