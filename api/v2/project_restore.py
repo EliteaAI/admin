@@ -51,8 +51,6 @@ TRUE_VALUES = ("1", "true", "yes", "on")
 SAFE_MODES = ("safe", "sanitized", "default")
 FULL_MODES = ("full", "raw", "as_is")
 
-DEFAULT_MAX_ARCHIVE_MB = 4096
-
 WAIT_POLL_SECONDS = 1
 
 
