@@ -22,6 +22,7 @@ backup. With attachments it becomes an encrypted ZIP:
 
     info.json       - stored first and uncompressed, so the restore dialog can
                       recognize the archive from its first bytes
+    skill-files/... - the skill file objects, see skill_files_backup
     backup.sql      - the safe SQL backup including the chat tables
     attachments/<bucket>/<name>
     manifest.json   - written last, lists every attachment and its status
@@ -32,6 +33,8 @@ import struct
 import hashlib
 import datetime
 import zipfile
+
+from . import skill_files_backup
 
 
 CHATS_NONE = "none"
@@ -192,12 +195,17 @@ class _Sink:
         return data
 
 
-def iter_backup_zip(info, sql_chunks, attachments, read_file):  # pylint: disable=R0914
-    """ Stream the backup archive: info, SQL, attachment files, manifest
+def iter_backup_zip(  # pylint: disable=R0913,R0914
+        info, sql_chunks, attachments, read_file, skill_files=(), read_skill_file=None,
+):
+    """ Stream the backup archive: info, skill files, SQL, attachment files, manifest
 
-    sql_chunks yields bytes; read_file(bucket, name) returns the file content.
+    sql_chunks yields bytes; read_file(bucket, name) returns the file content,
+    read_skill_file(sha256) the content of a skill file object.
     Attachments are stored uncompressed (they are mostly compressed already),
     which also keeps the archive free of compression ratios to defend against.
+    The skill files come before the SQL: the SQL stream ends the snapshot they
+    are read in.
     """
     sink = _Sink()
     archive = zipfile.ZipFile(sink, "w", allowZip64=True)  # pylint: disable=R1732
@@ -210,6 +218,11 @@ def iter_backup_zip(info, sql_chunks, attachments, read_file):  # pylint: disabl
     #
     archive.writestr(entry(ZIP_INFO_NAME, zipfile.ZIP_STORED), json.dumps(info))
     yield sink.drain()
+    #
+    if skill_files:
+        for name, content in skill_files_backup.iter_skill_file_members(skill_files, read_skill_file):
+            archive.writestr(entry(name, zipfile.ZIP_STORED), content)
+            yield sink.drain()
     #
     with archive.open(entry(ZIP_SQL_NAME, zipfile.ZIP_DEFLATED), "w", force_zip64=True) as target:
         for chunk in sql_chunks:
@@ -249,9 +262,9 @@ def iter_backup_zip(info, sql_chunks, attachments, read_file):  # pylint: disabl
     yield sink.drain()
 
 
-def make_info(project_id, project_name, created_by, mode, scope):
+def make_info(project_id, project_name, created_by, mode, scope, skill_files=()):  # pylint: disable=R0913
     """ Summary written in front of the archive and repeated in the manifest """
-    return {
+    info = {
         "format_version": FORMAT_VERSION,
         "project_id": project_id,
         "project_name": project_name,
@@ -262,6 +275,9 @@ def make_info(project_id, project_name, created_by, mode, scope):
         "attachments_count": len(scope["attachments"]),
         "attachments_size": sum(item.get("size") or 0 for item in scope["attachments"]),
     }
+    if skill_files:
+        info.update(skill_files_backup.summarize_skill_files(skill_files))
+    return info
 
 
 def is_zip(head):

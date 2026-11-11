@@ -30,6 +30,7 @@ from tools import constants as c  # pylint: disable=E0401
 
 from ...utils import backup_crypto
 from ...utils import chat_backup
+from ...utils import skill_files_backup
 from ...utils.project_backup import iter_project_backup_sql, iter_pg_dump
 
 PROMPT_LIB_MODE = "prompt_lib"
@@ -126,7 +127,6 @@ def _read_chat_scope(connection, project_id, schema, user_id, with_sizes):
     """ Chats and attachment files a backup with chats carries """
     with connection.cursor() as cursor:
         scope = chat_backup.resolve_chat_scope(cursor, schema, user_id)
-    connection.rollback()
     #
     if with_sizes and scope["attachments"]:
         try:
@@ -140,16 +140,27 @@ def _read_chat_scope(connection, project_id, schema, user_id, with_sizes):
     return scope
 
 
-def _zip_stream(project_id, sql_stream, info, attachments):
-    """ Archive with the SQL backup, the attachment files and the manifest """
+def _read_skill_files(connection, schema):
+    """ Skill file objects the project's skill versions reference """
+    with connection.cursor() as cursor:
+        return skill_files_backup.resolve_skill_files(cursor, schema)
+
+
+def _zip_stream(project_id, sql_stream, info, attachments, skill_files):  # pylint: disable=R0913
+    """ Archive with the SQL backup, the attachment and skill files and the manifest """
     client = _storage_client(project_id)
     #
     def read_file(bucket, name):
         return client.download_file(bucket, name, project_id=project_id)
     #
+    def read_skill_file(sha256):
+        return client.download_file(skill_files_backup.SKILL_FILES_BUCKET, sha256, project_id=project_id)
+    #
     def generate():
         try:
-            yield from chat_backup.iter_backup_zip(info, sql_stream, attachments, read_file)
+            yield from chat_backup.iter_backup_zip(
+                info, sql_stream, attachments, read_file, skill_files, read_skill_file,
+            )
         finally:
             sql_stream.close()
     #
@@ -158,7 +169,7 @@ def _zip_stream(project_id, sql_stream, info, attachments):
 
 def make_backup_response(  # pylint: disable=R0913,R0914,R0915
         project_id, safe_mode, exclude_tables, encrypt=False, master_key=None,
-        include_chats=chat_backup.CHATS_NONE, user=None,
+        include_chats=chat_backup.CHATS_NONE, user=None, include_skill_files=True,
 ):
     """ Resolve the project schema and return a streaming SQL download """
     from tools import project_constants as pc  # pylint: disable=E0401,C0415
@@ -189,7 +200,23 @@ def make_backup_response(  # pylint: disable=R0913,R0914,R0915
     #
     chats = None
     scope = None
+    skill_files = []
     with_files = include_chats == chat_backup.CHATS_WITH_ATTACHMENTS
+    excluded = {table.strip() for table in exclude_tables}
+    if safe_mode:
+        try:
+            skill_files_backup.begin_backup_snapshot(connection, project_id)
+        except Exception:  # pylint: disable=W0703
+            connection.close()
+            log.exception("project_backup: failed to start the snapshot of project %s", project_id)
+            return {"ok": False, "error": "failed to resolve project"}, 500
+    if safe_mode and include_skill_files and skill_files_backup.SKILL_FILES_TABLE not in excluded:
+        try:
+            skill_files = _read_skill_files(connection, schema)
+        except Exception:  # pylint: disable=W0703
+            connection.close()
+            log.exception("project_backup: failed to resolve skill files of project %s", project_id)
+            return {"ok": False, "error": "failed to resolve project skill files"}, 500
     if safe_mode and include_chats != chat_backup.CHATS_NONE:
         user_id = (user or {}).get("id")
         try:
@@ -213,33 +240,37 @@ def make_backup_response(  # pylint: disable=R0913,R0914,R0915
     if chats is not None:
         variant += "-chats-files" if with_files else "-chats"
     #
+    as_zip = with_files or bool(skill_files)
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
     filename = "elitea-backup-{}-{}-{}-{}.{}".format(
-        project_id, _slugify(project_name), variant, timestamp, "zip" if with_files else "sql",
+        project_id, _slugify(project_name), variant, timestamp, "zip" if as_zip else "sql",
     )
     #
-    mimetype = "application/zip" if with_files else "application/sql"
+    mimetype = "application/zip" if as_zip else "application/sql"
     if encrypt:
         filename += backup_crypto.ENVELOPE_SUFFIX
         mimetype = backup_crypto.ENVELOPE_MIMETYPE
     #
     log.info(
         "project_backup_created: project %s (%s) in %s mode (encrypted=%s, chats_included=%s,"
-        " chats=%s, attachments=%s)",
+        " chats=%s, attachments=%s, skill_files=%s)",
         project_id, schema, "safe" if safe_mode else "full", encrypt,
         include_chats if chats is not None else chat_backup.CHATS_NONE,
         scope["chats_count"] if scope else 0, len(scope["attachments"]) if scope else 0,
+        len(skill_files),
     )
     #
     if safe_mode:
         stream = _safe_stream(connection, project_id, schema, project_name, exclude_tables, chats)
-        if with_files and chats is not None:
+        if as_zip:
+            scope = scope or {"chats_count": 0, "attachments": []}
             info = chat_backup.make_info(
                 project_id, project_name,
                 {"id": (user or {}).get("id"), "name": (user or {}).get("name")},
-                include_chats, scope,
+                include_chats if chats is not None else chat_backup.CHATS_NONE, scope, skill_files,
             )
-            stream = _zip_stream(project_id, stream, info, scope["attachments"])
+            attachments = scope["attachments"] if with_files else []
+            stream = _zip_stream(project_id, stream, info, attachments, skill_files)
     else:
         connection.close()
         stream = _full_stream(schema)
@@ -268,6 +299,15 @@ def _plain_requested():
     return (flask.request.args.get("encrypt") or "").strip().lower() in FALSE_VALUES
 
 
+def _requested_skill_files():
+    """ Whether the include_skill_files query asks for the skill files, or None when it is not a known option """
+    value = (flask.request.args.get("include_skill_files") or skill_files_backup.SkillFilesOption.ALL).strip().lower()
+    try:
+        return skill_files_backup.SkillFilesOption(value) is skill_files_backup.SkillFilesOption.ALL
+    except ValueError:
+        return None
+
+
 def _requested_chats():
     """ include_chats query value, or None when it is not a known option """
     value = (flask.request.args.get("include_chats") or chat_backup.CHATS_NONE).strip().lower()
@@ -275,7 +315,7 @@ def _requested_chats():
 
 
 def make_chat_summary(project_id, user):
-    """ Chats, attachments and their size a backup with chats would carry """
+    """ Chats, attachments and skill files, and their size, a backup would carry """
     from tools import project_constants as pc  # pylint: disable=E0401,C0415
     schema = pc["PROJECT_SCHEMA_TEMPLATE"].format(project_id)
     connection = context.db.engine.raw_connection()
@@ -287,13 +327,16 @@ def make_chat_summary(project_id, user):
             if cursor.fetchone() is None:
                 return {"ok": False, "error": "project schema not found"}, 404
         scope = _read_chat_scope(connection, project_id, schema, (user or {}).get("id"), True)
+        skill_files = _read_skill_files(connection, schema)
     except Exception:  # pylint: disable=W0703
         log.exception("project_backup: failed to summarize chats of project %s", project_id)
         return {"ok": False, "error": "failed to resolve project chats"}, 500
     finally:
         connection.close()
     #
-    return {"ok": True, **chat_backup.summarize(scope)}, 200
+    return {
+        "ok": True, **chat_backup.summarize(scope), **skill_files_backup.summarize_skill_files(skill_files),
+    }, 200
 
 
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
@@ -307,8 +350,10 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
                     "The 'full' mode returns a plain pg_dump of the schema as-is, "
                     "including DDL and any plaintext secrets, and requires the "
                     "'projects.projects.backup.full' permission. "
+                    "A safe backup of a project with skill files is a ZIP that also "
+                    "carries the stored skill files (.zip instead of .sql). "
                     "The artifact is encrypted with a key derived from this setup's "
-                    "SECRETS_MASTER_KEY and downloads as .sql.enc; it can only be "
+                    "SECRETS_MASTER_KEY and downloads as .sql.enc or .zip.enc; it can only be "
                     "restored where that master key matches.",
         parameters=[
             {"name": "project_id", "in": "path", "schema": {"type": "integer"},
@@ -320,10 +365,16 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
              "description": "Comma-separated extra tables to skip (safe mode only)."},
             {"name": "encrypt", "in": "query",
              "schema": {"type": "boolean", "default": True},
-             "description": "Pass false to download a plain .sql artifact instead of an "
-                            "encrypted .sql.enc one, e.g. to move a backup to a setup "
+             "description": "Pass false to download a plain .sql or .zip artifact instead of an "
+                            "encrypted .sql.enc or .zip.enc one, e.g. to move a backup to a setup "
                             "with a different SECRETS_MASTER_KEY. Refused when the "
                             "platform requires encrypted backups."},
+            {"name": "include_skill_files", "in": "query",
+             "schema": {"type": "string", "enum": [option.value for option in skill_files_backup.SkillFilesOption],
+                        "default": skill_files_backup.SkillFilesOption.ALL.value},
+             "description": "all (default) carries the stored skill files in a ZIP next to the SQL "
+                            "backup; none leaves them out, so a restore into another project gives "
+                            "skills whose files are listed but cannot be read."},
         ],
     )
     @auth.decorators.check_api({
@@ -360,8 +411,13 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         if error is not None:
             return {"ok": False, "error": error}, 400
         #
+        include_skill_files = _requested_skill_files()
+        if include_skill_files is None:
+            return {"ok": False, "error": "unknown include_skill_files option"}, 400
+        #
         return make_backup_response(
             project_id, safe_mode, _requested_exclude_tables(), encrypt, master_key,
+            include_skill_files=include_skill_files,
         )
 
 
@@ -374,8 +430,10 @@ class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
                     "Only the 'safe' mode is available here: sensitive tables are "
                     "skipped and credential-bearing columns / JSON keys are redacted. "
                     "Raw pg_dump exports are available in the administration API only. "
+                    "A safe backup of a project with skill files is a ZIP that also "
+                    "carries the stored skill files (.zip instead of .sql). "
                     "The artifact is encrypted with a key derived from this setup's "
-                    "SECRETS_MASTER_KEY and downloads as .sql.enc; it can only be "
+                    "SECRETS_MASTER_KEY and downloads as .sql.enc or .zip.enc; it can only be "
                     "restored where that master key matches.",
         parameters=[
             {"name": "project_id", "in": "path", "schema": {"type": "integer"},
@@ -388,6 +446,12 @@ class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
                             "private chats): without_attachments adds the chat tables to the "
                             "SQL backup, with_attachments downloads an encrypted ZIP with the "
                             "SQL backup, a manifest and the attachment files."},
+            {"name": "include_skill_files", "in": "query",
+             "schema": {"type": "string", "enum": [option.value for option in skill_files_backup.SkillFilesOption],
+                        "default": skill_files_backup.SkillFilesOption.ALL.value},
+             "description": "all (default) carries the stored skill files in a ZIP next to the SQL "
+                            "backup; none leaves them out, so a restore into another project gives "
+                            "skills whose files are listed but cannot be read."},
         ],
     )
     @auth.decorators.check_api({
@@ -417,9 +481,13 @@ class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         if include_chats is None:
             return {"ok": False, "error": "unknown include_chats option"}, 400
         #
+        include_skill_files = _requested_skill_files()
+        if include_skill_files is None:
+            return {"ok": False, "error": "unknown include_skill_files option"}, 400
+        #
         return make_backup_response(
             project_id, True, _requested_exclude_tables(), encrypt, master_key,
-            include_chats=include_chats, user=auth.current_user(),
+            include_chats=include_chats, user=auth.current_user(), include_skill_files=include_skill_files,
         )
 
 

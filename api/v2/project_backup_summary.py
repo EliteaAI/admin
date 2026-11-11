@@ -28,7 +28,8 @@ class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     @register_openapi(
         name="Project Backup Chat Summary",
         description="Number of chats and attachment files, and their total size, that a "
-                    "project backup with chats would carry for the caller.",
+                    "project backup with chats would carry for the caller, and the number "
+                    "and total size of the skill files every safe backup carries.",
         parameters=[
             {"name": "project_id", "in": "path", "schema": {"type": "integer"},
              "description": "Project ID to back up."},
