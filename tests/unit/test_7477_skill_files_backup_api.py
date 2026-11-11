@@ -395,7 +395,8 @@ def _upload(endpoints, data, result=None, **form):
     runner = endpoints.restore.restore_runner
     runner.restore_safe_backup = restore_safe_backup
     endpoints.state.connection = FakeConnection([("information_schema.schemata", [(1,)])])
-    endpoints.flask.request.form = dict(form)
+    # The job is followed by the caller; the request answers 202 right away
+    endpoints.flask.request.form = dict({"background": "true"}, **form)
     endpoints.flask.request.files = {"file": types.SimpleNamespace(filename="backup.zip", stream=io.BytesIO(data))}
     #
     store, workers = FakeJobStore(), FakeWorkers()
@@ -469,3 +470,50 @@ def test_skill_files_zip_with_chats_but_no_attachment_files_only_relinks_attachm
     assert status == 200
     assert body["artifact"]["has_attachment_files"] is False
     assert captured["restore_chats"] == "without_attachments"
+
+
+def _request(endpoints, data, **form):
+    """ The restore request alone, against an in-memory job store and worker pool """
+    endpoints.state.connection = FakeConnection([("information_schema.schemata", [(1,)])])
+    endpoints.flask.request.form = dict(form)
+    endpoints.flask.request.files = {"file": types.SimpleNamespace(filename="backup.sql", stream=io.BytesIO(data))}
+    store, workers = FakeJobStore(), FakeWorkers()
+    runner = endpoints.restore.restore_runner
+    module = types.SimpleNamespace(
+        restore_job_store=lambda: store, restore_workers=workers, restore_job_schema="centry",
+        restore_settings={"spool_dir": runner.spool_dir({}), "max_archive_bytes": 10 ** 9, "lock_timeout": "30s"},
+        restore_worker_database=lambda: {},
+    )
+    return endpoints.restore.apply_uploaded_backup(module, 2), store, workers
+
+
+def test_a_client_that_does_not_ask_for_a_job_waits_for_the_result(endpoints, monkeypatch):
+    """ An older UI or a script keeps the synchronous answer it always got """
+    waited = []
+    monkeypatch.setattr(endpoints.restore, "_wait_for_job", lambda store, job_id: (
+        waited.append(job_id) or ({"ok": True, "result": {"total_rows": 1}}, 200)))
+    (body, status), _, workers = _request(endpoints, _sql_header(endpoints.utils).encode("utf-8"))
+    assert status == 200
+    assert body == {"ok": True, "result": {"total_rows": 1}}
+    assert waited == ["job-1"]
+    endpoints.restore.restore_runner.remove_spool(workers.started[0]["spool_path"])
+
+
+def test_background_answers_202_with_the_job(endpoints):
+    (body, status), _, workers = _request(endpoints, _sql_header(endpoints.utils).encode("utf-8"), background="true")
+    assert status == 202
+    assert body["job_id"] == "job-1" and body["status"] == "running"
+    endpoints.restore.restore_runner.remove_spool(workers.started[0]["spool_path"])
+
+
+@pytest.mark.parametrize("form, expected", [
+    ({"size": "123456789"}, 123456789),
+    ({}, None),
+], ids=["slice with its real size", "whole file without size"])
+def test_inspect_reports_the_size_of_the_whole_file(endpoints, form, expected):
+    data = _sql_header(endpoints.utils).encode("utf-8") + b"-- padding\n" * 200000
+    (body, status), _, workers = _request(endpoints, data, inspect="true", **form)
+    assert status == 200 and body["inspect"] is True
+    assert body["artifact"]["size"] == (expected if expected is not None else len(data))
+    assert workers.started == []
+

@@ -163,6 +163,16 @@ def _read_upload_head(source):
     return bytes(head)
 
 
+def _drain(stream):
+    """ Bytes left in the upload stream, read and discarded """
+    size = 0
+    while True:
+        chunk = stream.read(restore_runner.READ_CHUNK)
+        if not chunk:
+            return size
+        size += len(chunk)
+
+
 class _PrefixedStream:  # pylint: disable=R0903
     """ The upload stream with the bytes already read put back in front """
 
@@ -225,7 +235,9 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0913,R0914,R0915
     truncate = _flag("truncate")
     dry_run = _flag("dry_run")
     inspect_only = _flag("inspect")
-    wait = _flag("wait")
+    # A client that follows the job asks for it; any other client (an older UI,
+    # curl, CI) gets the synchronous response it always got
+    wait = not _flag("background")
     allow_mismatch = _flag("allow_project_mismatch") if allow_mismatch_override else False
     restore_chats = _requested_restore_chats()
     if restore_chats is None:
@@ -267,13 +279,14 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0913,R0914,R0915
         return {"ok": False, "error": str(exc)}, 400
     artifact["filename"] = filename
     #
-    # The dialog reads what a file carries as soon as it is picked; it only
-    # sends the first bytes, so the size is the one it reports
+    # The dialog reads what a file carries as soon as it is picked. A client
+    # that sends only the first bytes reports the real size; one that sends the
+    # whole file gets it measured, as before
     if inspect_only:
         try:
-            artifact["size"] = int(_param("size") or len(head))
+            artifact["size"] = int(_param("size"))
         except ValueError:
-            artifact["size"] = len(head)
+            artifact["size"] = len(head) + _drain(source.stream)
         return {"ok": True, "inspect": True, "artifact": artifact}, 200
     #
     kind = artifact["kind"]
@@ -507,6 +520,10 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
             {"name": "truncate", "in": "query", "schema": {"type": "boolean"},
              "description": "Empty the in-scope tables first (TRUNCATE ... CASCADE) "
                             "instead of merging with ON CONFLICT DO NOTHING."},
+            {"name": "background", "in": "query", "schema": {"type": "boolean"},
+             "description": "Answer 202 with a job_id right away and apply the backup in a worker; "
+                            "follow it with the project_restore_job endpoint. Without it the request "
+                            "waits for the restore and answers with its result, as before."},
             {"name": "dry_run", "in": "query", "schema": {"type": "boolean"},
              "description": "Execute inside a transaction and roll it back."},
             {"name": "allow_project_mismatch", "in": "query", "schema": {"type": "boolean"},
@@ -552,12 +569,19 @@ class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
             {"name": "truncate", "in": "query", "schema": {"type": "boolean"},
              "description": "Empty the in-scope tables first (TRUNCATE ... CASCADE) "
                             "instead of merging with ON CONFLICT DO NOTHING."},
+            {"name": "background", "in": "query", "schema": {"type": "boolean"},
+             "description": "Answer 202 with a job_id right away and apply the backup in a worker; "
+                            "follow it with the project_restore_job endpoint. Without it the request "
+                            "waits for the restore and answers with its result, as before."},
             {"name": "dry_run", "in": "query", "schema": {"type": "boolean"},
              "description": "Execute inside a transaction and roll it back."},
             {"name": "allow_project_mismatch", "in": "query", "schema": {"type": "boolean"},
              "description": "Required when the artifact was taken from another project."},
             {"name": "inspect", "in": "query", "schema": {"type": "boolean"},
-             "description": "Only read the artifact header and return what it carries."},
+             "description": "Only read the artifact header and return what it carries. The first "
+                            "1 MiB of the file is enough; pass 'size' with the real file size then."},
+            {"name": "size", "in": "query", "schema": {"type": "integer"},
+             "description": "With inspect: size of the whole file when only its start is uploaded."},
             {"name": "restore_chats", "in": "query",
              "schema": {"type": "string", "enum": list(chat_backup.CHAT_OPTIONS), "default": "none"},
              "description": "Restore the chats of a backup that carries them: "
