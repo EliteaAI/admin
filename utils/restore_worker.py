@@ -95,6 +95,8 @@ def main():
     channel, sys.stdout = sys.stdout, sys.stderr
     storage = sys.modules["{}.restore_storage".format(PACKAGE)].StorageProxy(channel, sys.stdin) \
         if payload.get("with_storage") else None
+    # A worker never outlives its pylon: the project would be free for a second restore
+    runner.watch_parent()
     status = runner.run_worker(payload, storage)
     sys.exit(status)
 

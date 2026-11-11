@@ -288,7 +288,7 @@ def apply_job(  # pylint: disable=R0912,R0913,R0914,R0915
                 open_chunks=open_bytes, schema=schema,
                 host=database["host"], port=database["port"], user=database["user"],
                 password=database["password"], database=database["database"],
-                dry_run=dry_run, known_settings=known_settings,
+                dry_run=dry_run, known_settings=known_settings, lock_timeout=lock_timeout,
             )
             if result["return_code"] != 0 and not dry_run:
                 raise RestoreFailed(
@@ -313,11 +313,23 @@ def apply_job(  # pylint: disable=R0912,R0913,R0914,R0915
 
 
 class Workers:
-    """ Restore worker processes of this pylon, at most `limit` at a time """
+    """ Restore worker processes of this pylon, at most `limit` at a time
+
+    A worker must not outlive its pylon: once its job is failed (on the next
+    boot or by the reaper) the project is free, and a retry would restore it
+    twice at once. The worker exits when the pylon end of its pipe closes, and
+    stop_all() kills the ones still running when the pylon stops.
+    """
 
     def __init__(self, limit):
         self.limit = limit
         self.running = {}  # job_id -> Popen
+
+    def stop_all(self):
+        for job_id, process in list(self.running.items()):
+            if process.poll() is None:
+                log.warning("project_restore: stopping the worker of job %s", job_id)
+                kill_worker(process.pid)
 
     def busy(self):
         self.running = {key: process for key, process in self.running.items() if process.poll() is None}
@@ -366,6 +378,44 @@ class Workers:
         import threading  # pylint: disable=C0415
         threading.Thread(target=watch, name="project-restore-{}".format(job_id), daemon=True).start()
         return process.pid
+
+
+def kill_worker(pid):
+    """ SIGKILL a worker and anything it started (psql): it leads its own process group """
+    import signal  # pylint: disable=C0415
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def worker_alive(pid):
+    """ Whether pid is still a running restore worker (not a recycled pid) """
+    try:
+        with open("/proc/{}/cmdline".format(int(pid)), "rb") as source:
+            return os.path.basename(WORKER_PATH).encode() in source.read()
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def watch_parent(interval=2):
+    """ Worker side: exit as soon as the pylon that started it is gone
+
+    getppid() changes when the parent dies (the worker is re-parented), and
+    works whatever the restore is doing - including long SQL phases between
+    storage calls. The restore transaction is rolled back by the server when
+    the connection closes.
+    """
+    parent = os.getppid()
+    sleep = _native("time", "sleep")
+
+    def run():
+        while True:
+            sleep(interval)
+            if os.getppid() != parent:
+                log.error("project_restore: the pylon that started this worker is gone, stopping")
+                os._exit(3)  # pylint: disable=W0212
+    _native("_thread", "start_new_thread")(run, ())
 
 
 def _register_external_pid(pid, present=True):

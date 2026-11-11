@@ -375,6 +375,12 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0913,R0914,R0915
     active = store.active(project_id)
     if active is not None:
         return {"ok": False, "error": "restore_in_progress", "job_id": active["id"]}, 409
+    # Checked before the upload is written to disk: a busy pod refuses at once
+    if module.restore_workers.busy():
+        return {
+            "ok": False, "error": "restore_capacity_busy",
+            "detail": "another restore is running on this server; retry in a minute",
+        }, 503
     #
     # Everything the worker needs from RPC or Vault is resolved here: it does
     # not call RPC. Its storage calls (chat attachments) are served by this
@@ -429,14 +435,6 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0913,R0914,R0915
         "project_restore: starting job %s, %s artifact to %s (%s, dry_run=%s)",
         job["id"], kind, schema, "partial" if tables else "full", dry_run,
     )
-    #
-    if module.restore_workers.busy():
-        restore_runner.remove_spool(spool_path)
-        store.fail(job["id"], "restore_capacity_busy", 503)
-        return {
-            "ok": False, "error": "restore_capacity_busy",
-            "detail": "another restore is running on this server; retry in a minute",
-        }, 503
     #
     payload = {
         "job_id": job["id"],

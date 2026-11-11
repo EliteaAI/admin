@@ -62,8 +62,16 @@ class Method:  # pylint: disable=E1101,R0903
         finally:
             connection.close()
         #
-        # Jobs this instance was running before a restart can not finish
-        failed = self.restore_job_store().fail_instance_jobs(context.node_name)
+        # Jobs this instance was running before a restart can not finish. A
+        # worker that survived it (it exits within seconds of losing its pylon,
+        # but may not have yet) is stopped first: failing the job frees the
+        # project, and the old worker must not restore it alongside a retry.
+        store = self.restore_job_store()
+        for job in store.instance_jobs(context.node_name):
+            if job["task_id"] and restore_runner.worker_alive(job["task_id"]):
+                log.warning("project_restore: stopping the leftover worker of job %s", job["id"])
+                restore_runner.kill_worker(int(job["task_id"]))
+        failed = store.fail_instance_jobs(context.node_name)
         if failed:
             log.warning("project_restore: marked %s interrupted restore job(s) failed", failed)
         #
@@ -73,8 +81,8 @@ class Method:  # pylint: disable=E1101,R0903
 
     @web.deinit()
     def _restore_tasks_deinit(self):
-        # Running workers finish on their own; their jobs are failed on the next boot otherwise
-        pass
+        # A worker can not finish without this pylon: its job is failed on the next boot
+        self.restore_workers.stop_all()
 
     @web.method()
     def restore_worker_database(self):
