@@ -141,17 +141,10 @@ def _attachment_settings(project_id):
         return "attachments", 365
 
 
-def _storage_settings(project_id):
-    """ Storage access of the project for the worker: resolved here, where RPC answers """
-    from tools import MinioClient, config as pylon_config  # pylint: disable=E0401,C0415
-    if getattr(pylon_config, "STORAGE_ENGINE", "s3") != "s3":
-        raise RuntimeError("files can only be restored with the s3 storage engine")
-    client = MinioClient.from_project_id(project_id)
-    access_key, secret_key, region, url = client.extract_access_data(
-        client.configuration_title, client.is_local,
-    )
-    return {"project_id": project_id, "access_key": access_key, "secret_key": secret_key,
-            "region": region, "url": url}
+def _storage_client(project_id):
+    """ The platform storage client of the project, whatever engine is configured """
+    from tools import MinioClient  # pylint: disable=E0401,C0415
+    return MinioClient.from_project_id(project_id)
 
 
 def _instance():
@@ -371,22 +364,13 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0913,R0914,R0915
         return {"ok": False, "error": "restore_in_progress", "job_id": active["id"]}, 409
     #
     # Everything the worker needs from RPC or Vault is resolved here: it does
-    # not call RPC. Storage serves the chat attachments and the skill files a
-    # safe restore re-uploads.
+    # not call RPC. Its storage calls (chat attachments, the skill files a safe
+    # restore re-uploads) are served by this pylon on MinioClient.
     with_chats = artifact.get("chats_included", chat_backup.CHATS_NONE) != chat_backup.CHATS_NONE \
         and restore_chats != chat_backup.CHATS_NONE
-    storage = None
     bucket, retention_days = None, None
-    if kind == KIND_SAFE:
-        if with_chats:
-            bucket, retention_days = _attachment_settings(project_id)
-        try:
-            storage = _storage_settings(project_id)
-        except Exception:  # pylint: disable=W0703
-            log.exception("project_restore: no storage access for project %s", project_id)
-            # Files that can not be uploaded only matter when the backup carries them
-            if with_chats or artifact.get("skill_files_count"):
-                return {"ok": False, "error": "file storage is not available"}, 503
+    if kind == KIND_SAFE and with_chats:
+        bucket, retention_days = _attachment_settings(project_id)
     #
     options = {
         "schema": schema,
@@ -451,10 +435,12 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0913,R0914,R0915
             "lock_timeout": module.restore_settings["lock_timeout"],
         },
         "master_key": master_key.decode("utf-8") if isinstance(master_key, bytes) else master_key,
-        "storage": storage,
+        "with_storage": kind == KIND_SAFE,
     }
     try:
-        task_id = str(module.restore_workers.start(job["id"], payload, _on_worker_exit(module)))
+        task_id = str(module.restore_workers.start(
+            job["id"], payload, _on_worker_exit(module), open_storage=lambda: _storage_client(project_id),
+        ))
     except Exception:  # pylint: disable=W0703
         log.exception("project_restore: could not start the worker for job %s", job["id"])
         restore_runner.remove_spool(spool_path)

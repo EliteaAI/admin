@@ -376,8 +376,8 @@ class FakeWorkers:
     def busy(self):
         return False
 
-    def start(self, job_id, payload, on_exit):
-        self.started.append(payload)
+    def start(self, job_id, payload, on_exit, open_storage=None):
+        self.started.append(dict(payload, open_storage=open_storage))
         return 1
 
 
@@ -394,8 +394,6 @@ def _upload(endpoints, data, result=None, **form):
         return dict(result or {})
     runner = endpoints.restore.restore_runner
     runner.restore_safe_backup = restore_safe_backup
-    # The request hands the worker storage settings; the worker side gets the storage itself
-    endpoints.restore._storage_settings = lambda project_id: {"project_id": project_id}  # pylint: disable=W0212
     endpoints.state.connection = FakeConnection([("information_schema.schemata", [(1,)])])
     endpoints.flask.request.form = dict(form)
     endpoints.flask.request.files = {"file": types.SimpleNamespace(filename="backup.zip", stream=io.BytesIO(data))}
@@ -412,10 +410,12 @@ def _upload(endpoints, data, result=None, **form):
         return body, status, captured
     #
     payload = workers.started[0]
+    # The worker's storage calls are served on the platform client the request hands over
+    storage = payload["open_storage"]() if payload["with_storage"] else None
     try:
         body = runner.apply_job(
             endpoints.state.connection, store.jobs[payload["job_id"]], payload["spool_path"], None,
-            endpoints.state.storage, max_archive_bytes=10 ** 9, lock_timeout="30s",
+            storage, max_archive_bytes=10 ** 9, lock_timeout="30s",
         )
     finally:
         runner.remove_spool(payload["spool_path"])
