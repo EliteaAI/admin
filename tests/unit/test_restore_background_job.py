@@ -470,3 +470,62 @@ class TestWorkerProcess:
         ).format(str(worker))
         output = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, check=True)
         assert output.stdout.split() == ["False", "True"]
+
+
+# ---------- worker storage served by the pylon ----------
+
+
+class TestStorageChannel:
+    """ The worker's storage calls run on the client the pylon serves them with """
+
+    def _load(self):
+        spec = importlib.util.spec_from_file_location(PACKAGE + ".restore_storage", UTILS_PATH / "restore_storage.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_calls_round_trip_through_a_real_pipe(self):
+        import threading  # pylint: disable=C0415
+        rs = self._load()
+        storage = FakeStorage({("attachments", "old.txt"): b"x"})
+        to_pylon_r, to_pylon_w = os.pipe()
+        to_worker_r, to_worker_w = os.pipe()
+        requests_in = os.fdopen(to_pylon_r, "r")
+        replies_out = os.fdopen(to_worker_w, "wb")
+        opened = []
+        server = threading.Thread(target=rs.serve, args=(
+            lambda: opened.append(1) or storage, requests_in, replies_out), daemon=True)
+        server.start()
+        proxy = rs.StorageProxy(os.fdopen(to_pylon_w, "w"), os.fdopen(to_worker_r, "r"))
+        #
+        assert proxy.list_bucket() == ["attachments"]
+        proxy.create_bucket("skill-files", bucket_type="system")
+        proxy.upload_file("skill-files", b"\x00\xffbinary", "abc")
+        assert storage.files[("skill-files", "abc")] == b"\x00\xffbinary"
+        assert {item["name"] for item in proxy.list_files("attachments")} == {"old.txt"}
+        proxy.remove_file("attachments", "old.txt")
+        assert storage.removed == [("attachments", "old.txt")]
+        assert opened == [1]  # one platform client for the whole restore
+        proxy.requests.close()
+        server.join(timeout=5)
+        assert not server.is_alive()
+
+    def test_a_failed_call_raises_in_the_worker(self):
+        rs = self._load()
+
+        class Broken(FakeStorage):
+            def list_files(self, bucket):
+                raise RuntimeError("storage is down")
+        requests = io.StringIO(json.dumps({"method": "list_files", "kwargs": {"bucket": "b"}}) + "\n")
+        replies = io.BytesIO()
+        rs.serve(lambda: Broken(), requests, replies)
+        proxy = rs.StorageProxy(io.StringIO(), io.StringIO(replies.getvalue().decode()))
+        with pytest.raises(rs.StorageCallFailed, match="storage is down"):
+            proxy.list_files("b")
+
+    def test_only_restore_calls_are_served(self):
+        rs = self._load()
+        replies = io.BytesIO()
+        rs.serve(lambda: FakeStorage(), io.StringIO(json.dumps({"method": "remove_bucket", "kwargs": {}}) + "\n"),
+                 replies)
+        assert "not allowed" in json.loads(replies.getvalue())["error"]

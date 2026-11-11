@@ -19,9 +19,11 @@
 
 Started by restore_runner with `python -I restore_worker.py`. A fork of the
 gevent web process inherits its hub and listener threads and can stall; a
-fresh interpreter has neither. Everything the job needs - database and
-storage settings, the master key - arrives as one JSON document on stdin, so
-no secret is visible in the process arguments or environment.
+fresh interpreter has neither. Everything the job needs - database settings,
+the master key - arrives as the first JSON line on stdin, so no secret is
+visible in the process arguments or environment. Files go to storage through
+the pylon that started the worker (restore_storage): stdout carries the
+storage calls, stdin their replies, so the worker keeps stdout for that alone.
 
 The worker imports the restore utils as a package of their own, with a
 minimal stand-in for the pylon modules they import.
@@ -69,7 +71,7 @@ def _load_utils():
     package.__path__ = [UTILS_PATH]
     sys.modules[PACKAGE] = package
     for name in ("chat_backup", "project_backup", "chat_restore", "project_restore",
-                 "backup_crypto", "restore_jobs", "restore_runner"):
+                 "backup_crypto", "restore_jobs", "restore_storage", "restore_runner"):
         spec = importlib.util.spec_from_file_location(
             "{}.{}".format(PACKAGE, name), os.path.join(UTILS_PATH, "{}.py".format(name)),
         )
@@ -79,80 +81,20 @@ def _load_utils():
     return sys.modules["{}.restore_runner".format(PACKAGE)]
 
 
-class AttachmentStorage:
-    """ The part of the platform storage client a restore uses, over plain boto3
-
-    Bucket names carry the project prefix the platform client adds.
-    """
-
-    def __init__(self, settings):
-        import boto3  # pylint: disable=E0401,C0415
-        from botocore.client import Config  # pylint: disable=E0401,C0415
-        #
-        self.prefix = "p--{}.".format(settings["project_id"])
-        self.region = settings.get("region")
-        self.s3 = boto3.client(
-            "s3", endpoint_url=settings.get("url"),
-            aws_access_key_id=settings.get("access_key"),
-            aws_secret_access_key=settings.get("secret_key"),
-            config=Config(signature_version="s3v4"), region_name=self.region,
-        )
-
-    def _name(self, bucket):
-        return bucket if bucket.startswith(self.prefix) else self.prefix + bucket
-
-    def list_bucket(self):
-        return [
-            item["Name"][len(self.prefix):] for item in self.s3.list_buckets().get("Buckets", [])
-            if item["Name"].startswith(self.prefix)
-        ]
-
-    def create_bucket(self, bucket, bucket_type=None, retention_days=None):
-        name = self._name(bucket)
-        self.s3.create_bucket(
-            ACL="public-read", Bucket=name,
-            CreateBucketConfiguration={"LocationConstraint": self.region},
-        )
-        if bucket_type:
-            self.s3.put_bucket_tagging(Bucket=name, Tagging={"TagSet": [{"Key": "type", "Value": bucket_type}]})
-        if retention_days:
-            self.s3.put_bucket_lifecycle_configuration(Bucket=name, LifecycleConfiguration={"Rules": [{
-                "Expiration": {"Days": retention_days},
-                "NoncurrentVersionExpiration": {"NoncurrentDays": retention_days},
-                "ID": "bucket-retention-policy", "Filter": {"Prefix": ""}, "Status": "Enabled",
-            }]})
-
-    def list_files(self, bucket):
-        files = []
-        token = None
-        while True:
-            kwargs = {"Bucket": self._name(bucket)}
-            if token:
-                kwargs["ContinuationToken"] = token
-            response = self.s3.list_objects_v2(**kwargs)
-            files.extend({"name": item["Key"], "size": item["Size"]} for item in response.get("Contents", []))
-            token = response.get("NextContinuationToken")
-            if not token:
-                return files
-
-    def upload_file(self, bucket, content, name):
-        return self.s3.put_object(Key=name, Bucket=self._name(bucket), Body=content)
-
-    def remove_file(self, bucket, name):
-        return self.s3.delete_object(Key=name, Bucket=self._name(bucket))
-
-
 def main():
     logging.basicConfig(
         level=logging.INFO, stream=sys.stderr,
         format="%(asctime)s - %(levelname)8s - project_restore_worker - %(message)s",
     )
-    payload = json.loads(sys.stdin.read())
+    payload = json.loads(sys.stdin.readline())
     master_key = payload.get("master_key")
     _install_stand_ins(master_key)
     runner = _load_utils()
     #
-    storage = AttachmentStorage(payload["storage"]) if payload.get("storage") else None
+    # Nothing else may write to stdout: it is the storage channel
+    channel, sys.stdout = sys.stdout, sys.stderr
+    storage = sys.modules["{}.restore_storage".format(PACKAGE)].StorageProxy(channel, sys.stdin) \
+        if payload.get("with_storage") else None
     status = runner.run_worker(payload, storage)
     sys.exit(status)
 

@@ -41,6 +41,7 @@ from pylon.core.tools import log  # pylint: disable=E0611,E0401
 from . import backup_crypto
 from . import chat_backup
 from . import restore_jobs
+from . import restore_storage
 from .chat_restore import AttachmentRestorer, iter_zip_sql, open_backup_zip
 from .project_restore import (
     KIND_SAFE, HEADER_SCAN_BYTES, SAFE_RESTORE_DENIED_TABLES,
@@ -322,21 +323,41 @@ class Workers:
         self.running = {key: process for key, process in self.running.items() if process.poll() is None}
         return len(self.running) >= self.limit
 
-    def start(self, job_id, payload, on_exit):
-        """ Start the worker for a job; on_exit(job_id, return_code) runs once it ends """
+    def start(self, job_id, payload, on_exit, open_storage=None):
+        """ Start the worker for a job; on_exit(job_id, return_code) runs once it ends
+
+        The worker reads its payload as the first stdin line, then talks to
+        the storage served here: requests on its stdout, replies on its stdin.
+        open_storage() builds the platform storage client on the first call.
+        """
         process = subprocess.Popen(  # pylint: disable=R1732
             [sys.executable, "-I", WORKER_PATH],
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=None,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=None,
             close_fds=True, start_new_session=True,
         )
         _register_external_pid(process.pid)
         try:
-            process.stdin.write(json.dumps(payload).encode("utf-8"))
-        finally:
-            process.stdin.close()
+            process.stdin.write((json.dumps(payload) + "\n").encode("utf-8"))
+            process.stdin.flush()
+        except Exception:
+            process.kill()
+            raise
         self.running[job_id] = process
         #
         def watch():
+            try:
+                # Storage calls run here, on this pylon's MinioClient; the
+                # worker blocks on each reply, so this is the only reader
+                restore_storage.serve(open_storage, (line.decode("utf-8") for line in process.stdout),
+                                      process.stdin)
+            except Exception:  # pylint: disable=W0703
+                log.exception("project_restore: storage channel of job %s failed", job_id)
+            finally:
+                for stream in (process.stdin, process.stdout):
+                    try:
+                        stream.close()
+                    except Exception:  # pylint: disable=W0703
+                        pass
             return_code = process.wait()
             _register_external_pid(process.pid, present=False)
             self.running.pop(job_id, None)

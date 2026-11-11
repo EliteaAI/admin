@@ -26,6 +26,7 @@ from pylon.core.tools import log  # pylint: disable=E0611,E0401
 
 from tools import auth, api_tools, register_openapi  # pylint: disable=E0401
 from tools import context  # pylint: disable=E0401
+
 from tools import constants as c  # pylint: disable=E0401
 
 from ...utils import backup_crypto
@@ -140,17 +141,10 @@ def _attachment_settings(project_id):
         return "attachments", 365
 
 
-def _storage_settings(project_id):
-    """ Storage access of the project for the worker: resolved here, where RPC answers """
-    from tools import MinioClient, config as pylon_config  # pylint: disable=E0401,C0415
-    if getattr(pylon_config, "STORAGE_ENGINE", "s3") != "s3":
-        raise RuntimeError("chat attachments can only be restored with the s3 storage engine")
-    client = MinioClient.from_project_id(project_id)
-    access_key, secret_key, region, url = client.extract_access_data(
-        client.configuration_title, client.is_local,
-    )
-    return {"project_id": project_id, "access_key": access_key, "secret_key": secret_key,
-            "region": region, "url": url}
+def _storage_client(project_id):
+    """ The platform storage client of the project, whatever engine is configured """
+    from tools import MinioClient  # pylint: disable=E0401,C0415
+    return MinioClient.from_project_id(project_id)
 
 
 def _instance():
@@ -263,7 +257,7 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0913,R0914,R0915
         return {
             "ok": False,
             "error": "only encrypted backups can be restored on this setup; "
-                     "export the project again and upload the .sql.enc file",
+                     "export the project again and upload the .sql.enc or .zip.enc file",
         }, 400
     #
     try:
@@ -369,19 +363,14 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0913,R0914,R0915
     if active is not None:
         return {"ok": False, "error": "restore_in_progress", "job_id": active["id"]}, 409
     #
-    # Everything the child needs from RPC or Vault is resolved here: the RPC
-    # node it inherits is not serviced in the forked process
+    # Everything the worker needs from RPC or Vault is resolved here: it does
+    # not call RPC. Its storage calls (chat attachments) are served by this
+    # pylon on MinioClient.
     with_chats = artifact.get("chats_included", chat_backup.CHATS_NONE) != chat_backup.CHATS_NONE \
         and restore_chats != chat_backup.CHATS_NONE
-    storage = None
     bucket, retention_days = None, None
     if kind == KIND_SAFE and with_chats:
         bucket, retention_days = _attachment_settings(project_id)
-        try:
-            storage = _storage_settings(project_id)
-        except Exception:  # pylint: disable=W0703
-            log.exception("project_restore: no storage client for project %s", project_id)
-            return {"ok": False, "error": "attachment storage is not available"}, 503
     #
     options = {
         "schema": schema,
@@ -446,10 +435,12 @@ def apply_uploaded_backup(  # pylint: disable=R0911,R0912,R0913,R0914,R0915
             "lock_timeout": module.restore_settings["lock_timeout"],
         },
         "master_key": master_key.decode("utf-8") if isinstance(master_key, bytes) else master_key,
-        "storage": storage,
+        "with_storage": kind == KIND_SAFE,
     }
     try:
-        task_id = str(module.restore_workers.start(job["id"], payload, _on_worker_exit(module)))
+        task_id = str(module.restore_workers.start(
+            job["id"], payload, _on_worker_exit(module), open_storage=lambda: _storage_client(project_id),
+        ))
     except Exception:  # pylint: disable=W0703
         log.exception("project_restore: could not start the worker for job %s", job["id"])
         restore_runner.remove_spool(spool_path)
@@ -492,7 +483,7 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     @register_openapi(
         name="Restore Project Backup",
         description="Restore a backup produced by the project backup endpoint into a "
-                    "project schema. Upload the .sql.enc (or .sql) file as multipart "
+                    "project schema. Upload the .sql.enc or .zip.enc (or plain .sql / .zip) file as multipart "
                     "form field 'file'. An encrypted artifact is decrypted and verified "
                     "with a key derived from this setup's SECRETS_MASTER_KEY, so only "
                     "artifacts produced by a setup sharing that key can be restored. "
@@ -531,7 +522,6 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     def post(self, project_id: int, **kwargs):
         """ Process POST """
         _ = kwargs
-        #
         return apply_uploaded_backup(
             self.module, project_id, policy=backup_crypto.handler_policy(self),
         )
@@ -543,7 +533,7 @@ class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     @register_openapi(
         name="Restore Project Backup (project scope)",
         description="Restore a redacted (safe) backup into this project. Upload the "
-                    ".sql.enc (or .sql) file as multipart form field 'file'. An encrypted "
+                    ".sql.enc or .zip.enc (or plain .sql / .zip) file as multipart form field 'file'. An encrypted "
                     "artifact is decrypted and verified with a key derived from this "
                     "setup's SECRETS_MASTER_KEY, so only artifacts produced by a setup "
                     "sharing that key can be restored. Only the 'safe' mode is "
@@ -585,7 +575,6 @@ class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     def post(self, project_id: int, **kwargs):
         """ Process POST """
         _ = kwargs
-        #
         # Safe artifacts may be restored across projects via allow_project_mismatch=true;
         # authorization is enforced on the TARGET project (models.project_backup.restore
         # on project_id in the URL), so the caller must hold that permission there --
