@@ -517,3 +517,21 @@ def test_inspect_reports_the_size_of_the_whole_file(endpoints, form, expected):
     assert body["artifact"]["size"] == (expected if expected is not None else len(data))
     assert workers.started == []
 
+
+def test_a_busy_pod_refuses_before_writing_the_upload_to_disk(endpoints, monkeypatch):
+    spooled = []
+    monkeypatch.setattr(endpoints.restore.restore_runner, "spool_upload",
+                        lambda *args, **kwargs: spooled.append(1) or ("/nowhere", 0))
+    endpoints.state.connection = FakeConnection([("information_schema.schemata", [(1,)])])
+    endpoints.flask.request.form = {"background": "true"}
+    endpoints.flask.request.files = {"file": types.SimpleNamespace(
+        filename="backup.sql", stream=io.BytesIO(_sql_header(endpoints.utils).encode("utf-8")))}
+    store = FakeJobStore()
+    module = types.SimpleNamespace(
+        restore_job_store=lambda: store, restore_workers=types.SimpleNamespace(busy=lambda: True),
+        restore_job_schema="centry", restore_settings={}, restore_worker_database=lambda: {},
+    )
+    body, status = endpoints.restore.apply_uploaded_backup(module, 2)
+    assert status == 503 and body["error"] == "restore_capacity_busy"
+    assert spooled == [] and store.jobs == {}
+

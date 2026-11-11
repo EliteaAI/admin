@@ -529,3 +529,86 @@ class TestStorageChannel:
         rs.serve(lambda: FakeStorage(), io.StringIO(json.dumps({"method": "remove_bucket", "kwargs": {}}) + "\n"),
                  replies)
         assert "not allowed" in json.loads(replies.getvalue())["error"]
+
+
+# ---------- review fixes ----------
+
+
+class TestReviewFixes:
+
+    def _rs(self):
+        spec = importlib.util.spec_from_file_location(PACKAGE + ".restore_storage", UTILS_PATH / "restore_storage.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_storage_results_that_are_not_json_travel_as_text(self):
+        """ S3 answers carry datetimes; they must not turn into None (an empty bucket) """
+        import datetime  # pylint: disable=C0415
+        rs = self._rs()
+
+        class S3Like(FakeStorage):
+            def list_files(self, bucket):
+                return [{"name": "a", "size": 1, "modified": datetime.datetime(2026, 11, 11)}]
+        replies = io.BytesIO()
+        rs.serve(lambda: S3Like(), io.StringIO(json.dumps({"method": "list_files", "args": ["b"]}) + "\n"), replies)
+        assert json.loads(replies.getvalue())["result"] == [{"name": "a", "size": 1, "modified": "2026-11-11 00:00:00"}]
+
+    def test_psql_gets_the_lock_timeout(self, monkeypatch):
+        import subprocess  # pylint: disable=C0415
+        seen = {}
+
+        class FakePopen:
+            def __init__(self, command, stdin=None, stdout=None, stderr=None, env=None):
+                seen["env"] = env
+                self.stdin = io.BytesIO()
+                self.returncode = 0
+
+            def wait(self):
+                return 0
+
+            def poll(self):
+                return 0
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setenv("PGOPTIONS", "-c application_name=x")
+        pr.run_psql(lambda: iter([b"SELECT 1;\n"]), "p_3", "db", 5432, "u", "p", "db", lock_timeout="30s")
+        assert seen["env"]["PGOPTIONS"] == "-c application_name=x -c lock_timeout=30s"
+
+    @needs_crypto
+    def test_a_worker_stops_when_its_pylon_dies(self, tmp_path):
+        """ A real worker whose parent is killed exits on its own """
+        import subprocess  # pylint: disable=C0415
+        import time  # pylint: disable=C0415
+        pidfile = tmp_path / "worker.pid"
+        worker_script = tmp_path / "worker.py"
+        worker_script.write_text(
+            "import os, runpy, time\n"
+            "m = runpy.run_path({worker!r}, run_name='probe')\n"
+            "m['_install_stand_ins'](None)\n"
+            "m['_load_utils']().watch_parent(interval=0.2)\n"
+            "open({pidfile!r}, 'w').write(str(os.getpid()))\n"
+            "time.sleep(30)\n".format(worker=str(UTILS_PATH / "restore_worker.py"), pidfile=str(pidfile))
+        )
+        pylon_script = tmp_path / "pylon.py"
+        pylon_script.write_text(
+            "import subprocess, sys, time\n"
+            "subprocess.Popen([sys.executable, '-I', {worker!r}], start_new_session=True)\n"
+            "time.sleep(30)\n".format(worker=str(worker_script))
+        )
+        pylon = subprocess.Popen([sys.executable, "-I", str(pylon_script)])
+        deadline = time.time() + 20
+        while not pidfile.exists() and time.time() < deadline:
+            time.sleep(0.1)
+        assert pidfile.exists(), "the worker did not start"
+        worker = int(pidfile.read_text())
+        pylon.kill()
+        pylon.wait()
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            try:
+                os.kill(worker, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.1)
+        os.kill(worker, 9)
+        pytest.fail("the worker outlived its pylon")

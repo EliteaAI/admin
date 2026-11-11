@@ -197,6 +197,14 @@ class JobStore:
             (STATUS_FAILED, error, status_code, json.dumps(body), job_id, ACTIVE_STATUSES),
         )
 
+    def instance_jobs(self, instance):
+        """ Active jobs started by this instance """
+        rows = self._execute(
+            "SELECT " + ", ".join(COLUMNS) + " FROM {table} WHERE instance = %s AND status IN %s",
+            (instance, ACTIVE_STATUSES), fetch="all",
+        )
+        return [_row(row) for row in rows or []]
+
     def fail_instance_jobs(self, instance):
         """ Jobs a restarted pod was running can not finish any more """
         return self._execute(

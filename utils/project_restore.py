@@ -1466,9 +1466,12 @@ def filter_unknown_settings(open_chunks, known_settings):
 
 def run_psql(  # pylint: disable=R0913,R0914
         open_chunks, schema, host, port, user, password, database,
-        dry_run=False, extra_args=(), known_settings=None,
+        dry_run=False, extra_args=(), known_settings=None, lock_timeout=None,
 ):
-    """ Feed a pg_dump artifact to psql inside a single transaction """
+    """ Feed a pg_dump artifact to psql inside a single transaction
+
+    lock_timeout bounds how long psql waits for the locks of the schema it rebuilds.
+    """
     import os  # pylint: disable=C0415
     import tempfile  # pylint: disable=C0415
     import subprocess  # pylint: disable=C0415
@@ -1495,6 +1498,11 @@ def run_psql(  # pylint: disable=R0913,R0914
     #
     environment = dict(os.environ)
     environment["PGPASSWORD"] = password or ""
+    if lock_timeout:
+        # A session setting: a SET in the dump preamble is filtered like any other
+        environment["PGOPTIONS"] = "{} -c lock_timeout={}".format(
+            environment.get("PGOPTIONS", ""), lock_timeout,
+        ).strip()
     #
     # NOTE: psql output goes to spool files, not pipes. We write the whole
     # artifact to stdin before reading anything back, so a pipe would let psql

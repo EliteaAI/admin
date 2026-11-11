@@ -75,12 +75,9 @@ class StorageProxy:
 
 
 def _plain(value):
-    """ A storage call result as JSON: S3 responses carry datetimes and other objects """
-    try:
-        json.dumps(value)
-        return value
-    except (TypeError, ValueError):
-        return None
+    """ A storage call result as JSON: S3 responses carry datetimes and other objects,
+    which travel as text rather than being dropped """
+    return json.loads(json.dumps(value, default=str))
 
 
 def serve(open_client, requests, replies):
