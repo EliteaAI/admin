@@ -1,4 +1,4 @@
-"""Unit tests for EL-TBD - project restore as a background job.
+"""Unit tests for EL-7498 - project restore as a background job.
 
 Covers:
   - utils/project_restore.py: header-only inspect (AC-9), lock window (AC-6)
@@ -16,10 +16,65 @@ import pytest
 
 
 UTILS_PATH = pathlib.Path(__file__).resolve().parents[2] / "utils"
-SHARED_TOOLS_PATH = pathlib.Path(__file__).resolve().parents[3] / "shared" / "tools"
 PACKAGE = "_admin_utils_restore_job"
 
 MASTER_KEY = b"test-master-key-for-restore-jobs"
+
+
+def _find_artifact_crypto():
+    """ The shared plugin's artifact_crypto next to this plugin, or None
+
+    CI checks out this plugin alone, so the shared plugin (and cryptography)
+    may be missing: the tests that really encrypt are skipped then.
+    """
+    plugin_root = UTILS_PATH.parent
+    for directory in (plugin_root, *plugin_root.parents):
+        candidate = directory / "shared" / "tools" / "artifact_crypto.py"
+        if candidate.is_file():
+            try:
+                import cryptography  # noqa: F401  pylint: disable=C0415,W0611
+            except ImportError:
+                return None
+            return candidate
+    return None
+
+
+ARTIFACT_CRYPTO_PATH = _find_artifact_crypto()
+needs_crypto = pytest.mark.skipif(
+    ARTIFACT_CRYPTO_PATH is None, reason="shared plugin or cryptography not available",
+)
+
+
+def _artifact_crypto_stand_in():
+    """ Enough of tools.artifact_crypto for backup_crypto to import; nothing can be encrypted """
+    module = types.ModuleType("tools.artifact_crypto")
+    module.ENVELOPE_SUFFIX = ".enc"
+    module.ENVELOPE_MIMETYPE = "application/octet-stream"
+    module.CIPHER = "AES-256-GCM"
+    module.KDF = "HKDF-SHA256"
+    module.FRAME_SIZE = 1048576
+    module.MAX_FRAME_SIZE = 8388608
+    module.POLICY_DISABLED, module.POLICY_ENABLED, module.POLICY_REQUIRED = "disabled", "enabled", "required"
+    module.POLICIES = (module.POLICY_DISABLED, module.POLICY_ENABLED, module.POLICY_REQUIRED)
+    module.configured_master_key = lambda: None
+    module.resolve_policy = lambda config, key: module.POLICY_ENABLED
+
+    class Envelope:  # pylint: disable=R0903
+        def __init__(self, magic, *args):
+            self.magic = magic
+
+        def is_encrypted(self, head):
+            if isinstance(head, str):
+                head = head.encode("utf-8", "replace")
+            return head.startswith(self.magic)
+
+        def _unavailable(self, *args, **kwargs):
+            raise RuntimeError("artifact_crypto is not available in this run")
+
+        key_id = iter_encrypt = iter_decrypt = wrap_decrypt = _unavailable
+
+    module.Envelope = Envelope
+    return module
 
 
 def _load_utils():
@@ -37,12 +92,14 @@ def _load_utils():
     # backup_crypto imports tools.artifact_crypto from the shared plugin
     tools_module = sys.modules.setdefault("tools", types.ModuleType("tools"))
     if not hasattr(tools_module, "artifact_crypto"):
-        spec = importlib.util.spec_from_file_location(
-            "tools.artifact_crypto", SHARED_TOOLS_PATH / "artifact_crypto.py",
-        )
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
+        if ARTIFACT_CRYPTO_PATH is None:
+            module = _artifact_crypto_stand_in()
+        else:
+            spec = importlib.util.spec_from_file_location("tools.artifact_crypto", ARTIFACT_CRYPTO_PATH)
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = module
+            spec.loader.exec_module(module)
+        sys.modules["tools.artifact_crypto"] = module
         tools_module.artifact_crypto = module
     #
     package = types.ModuleType(PACKAGE)
@@ -123,6 +180,7 @@ class TestInspectHead:
         assert artifact["encrypted"] is False
         assert artifact["has_attachment_files"] is False
 
+    @needs_crypto
     def test_encrypted_sql_slice_spanning_several_frames(self):
         data = _encrypt(_sql_backup(rows=20000))
         assert len(data) > pr.INSPECT_BYTES  # the slice cuts the envelope short
@@ -142,6 +200,7 @@ class TestInspectHead:
         assert artifact["attachments_size"] == sum(len(c) for c in FILES.values())
         assert artifact["has_attachment_files"] is True
 
+    @needs_crypto
     def test_encrypted_zip_slice(self):
         data = _encrypt(_zip_backup())
         artifact = pr.inspect_head(data[:pr.INSPECT_BYTES], master_key=MASTER_KEY)
@@ -149,6 +208,7 @@ class TestInspectHead:
         assert artifact["has_attachment_files"] is True
         assert artifact["encrypted"] is True
 
+    @needs_crypto
     def test_encrypted_without_key_is_rejected(self):
         with pytest.raises(ValueError):
             pr.inspect_head(_encrypt(_sql_backup())[:pr.INSPECT_BYTES], master_key=None)
@@ -157,6 +217,7 @@ class TestInspectHead:
         with pytest.raises(ValueError):
             pr.inspect_head(os.urandom(4096), master_key=None)
 
+    @needs_crypto
     def test_tampered_first_frame_is_rejected(self):
         data = bytearray(_encrypt(_sql_backup()))
         data[-20] ^= 0xFF
@@ -380,6 +441,7 @@ class TestInspectText:
         "CREATE SCHEMA p_5;\nCREATE TABLE p_5.applications (id integer);\n"
     ).encode("utf-8")
 
+    @needs_crypto
     def test_encrypted_pg_dump_exposes_its_schema(self):
         artifact, text = pr.inspect_head(_encrypt(self.PG_DUMP), master_key=MASTER_KEY, with_text=True)
         assert artifact["kind"] == pr.KIND_PG_DUMP
@@ -395,6 +457,7 @@ class TestInspectText:
 
 class TestWorkerProcess:
 
+    @needs_crypto
     def test_worker_runs_in_a_fresh_interpreter(self):
         """ The worker starts with -I and imports the utils without pylon or gevent """
         import subprocess  # pylint: disable=C0415
