@@ -145,6 +145,10 @@ STATEMENT_UNSUPPORTED = "unsupported"
 # refused instead of skipping the table.
 SAFE_RESTORE_DENIED_TABLES = frozenset(SAFE_MODE_EXCLUDED_TABLES)
 
+# Tables a safe backup never carries rows for, chats aside (they come when
+# the backup includes them, and are merged by chat_restore)
+NOT_EXPORTED_TABLES = SAFE_RESTORE_DENIED_TABLES.difference(CHAT_BACKUP_TABLES)
+
 # Rewritten to the restoring user when an artifact from another project is
 # applied, so restored entities are not attributed to that project's users
 USER_OWNER_COLUMNS = ("author_id", "owner_id")
@@ -1449,8 +1453,10 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
             child: foreign_key_references(cursor, schema, child) for child in children
         }
         #
+        parents = foreign_key_parents(cursor, schema)
+        #
         if requested and include_parents:
-            requested = expand_with_parents(requested, foreign_key_parents(cursor, schema))
+            requested = expand_with_parents(requested, parents)
             requested = requested.difference(denied)
     # The catalog reads opened a transaction; the one writing starts later
     dbapi_connection.rollback()
@@ -1486,9 +1492,13 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
         if requested:
             truncate_targets = sorted(requested.difference(chat_tables_skipped))
         else:
+            carried = scan_backup_tables(open_chunks)
+            # The rows of an orphaned table are skipped: its target rows stay too
+            missing_parents = NOT_EXPORTED_TABLES.difference(carried)
             truncate_targets = sorted(
-                scan_backup_tables(open_chunks).intersection(existing).difference(denied)
+                table for table in carried.intersection(existing).difference(denied)
                 .difference(chat_tables_skipped)
+                if not parents.get(table, set()).intersection(missing_parents)
             )
         # Replacing chats empties every chat table, not only those the backup has rows for
         if with_chats:
@@ -1498,6 +1508,7 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
     #
     seen_tables = set()
     skipped_tables = set()
+    orphaned_tables = set()
     replaced_tables = set()
     #
     # Rows of merged tables and of the tables referencing them are collected in
@@ -1563,6 +1574,17 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
             if table is None or table not in existing or table in chat_tables_skipped \
                     or (requested and table not in requested):
                 skipped_tables.add(table or "?")
+                if rows is not None:
+                    rows.drain()
+                continue
+            #
+            # A safe backup does not carry the tables the exporter leaves out
+            # (eval_run), so rows referencing them would fail their FK; older
+            # backups still carry such children (eval_case_execution)
+            if table not in seen_tables and parents.get(table, set()).intersection(
+                    NOT_EXPORTED_TABLES.difference(seen_tables).union(orphaned_tables)):
+                orphaned_tables.add(table)
+                skipped_tables.add(table)
                 if rows is not None:
                     rows.drain()
                 continue

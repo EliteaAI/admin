@@ -373,6 +373,22 @@ def _self_reference_columns(cursor, schema):
     return result
 
 
+def _exclude_orphaned_children(tables, edges, excluded):
+    """ Also exclude the tables referencing an excluded one
+
+    Their rows would point at rows the backup does not carry, and a restore
+    fails on the foreign key (eval_case_execution -> eval_run).
+    """
+    present = set(tables)
+    changed = True
+    while changed:
+        changed = False
+        for child, parent in edges:
+            if child in present and child not in excluded and parent in excluded:
+                excluded[child] = "references {}, which is not exported".format(parent)
+                changed = True
+
+
 def order_tables(tables, edges):
     """ Order tables so that parents are inserted before their children """
     table_set = set(tables)
@@ -497,8 +513,10 @@ def iter_project_backup_sql(  # pylint: disable=R0913,R0914,R0915
         if not all_tables:
             raise ValueError("Schema {} has no tables".format(schema))
         #
+        edges = _foreign_key_edges(cursor, schema)
+        _exclude_orphaned_children(all_tables, edges, excluded)
         tables = [table for table in all_tables if table not in excluded]
-        tables = order_tables(tables, _foreign_key_edges(cursor, schema))
+        tables = order_tables(tables, edges)
         #
         columns = {table: _list_columns(cursor, schema, table) for table in tables}
         sequences = {
