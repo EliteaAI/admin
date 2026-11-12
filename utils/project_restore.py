@@ -50,7 +50,7 @@ INSPECT_BYTES = 1048576 + 16384
 
 LOCK_ERROR = "the project is in use and its tables could not be locked; retry the restore later"
 
-HEADER_LINE_RE = re.compile(r"^--\s*([a-z_]+):\s*(.*?)\s*$")
+HEADER_LINE_RE = re.compile(r"^--\s*([a-z_]+):(.*)$")
 
 INSERT_RE = re.compile(
     r'^insert\s+into\s+(?:"([^"]+)"|([a-z_][0-9a-z_$]*))', re.IGNORECASE | re.DOTALL
@@ -595,7 +595,7 @@ def parse_header(head):
         if match is None:
             continue
         #
-        key, value = match.group(1), match.group(2)
+        key, value = match.group(1), match.group(2).strip()
         if key in ("project_id", "project_name", "schema", "mode", "generated_at",
                    "chats_included", "chats_count", "attachments_count"):
             result.setdefault(key, value)
