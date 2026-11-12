@@ -906,6 +906,52 @@ def referencing_columns(cursor, schema, table):
     return {child: column for child, column in cursor.fetchall() if child != table}
 
 
+def foreign_key_references(cursor, schema, table):
+    """ [(column, parent, parent column)] of the single-column foreign keys of `table` """
+    cursor.execute(
+        "select att.attname, parent.relname, parent_att.attname"
+        " from pg_constraint con"
+        " join pg_class child on child.oid = con.conrelid"
+        " join pg_class parent on parent.oid = con.confrelid"
+        " join pg_namespace child_ns on child_ns.oid = child.relnamespace"
+        " join pg_namespace parent_ns on parent_ns.oid = parent.relnamespace"
+        " join pg_attribute att on att.attrelid = con.conrelid and att.attnum = con.conkey[1]"
+        " join pg_attribute parent_att"
+        " on parent_att.attrelid = con.confrelid and parent_att.attnum = con.confkey[1]"
+        " where con.contype = 'f' and array_length(con.conkey, 1) = 1"
+        " and child_ns.nspname = %s and parent_ns.nspname = %s and child.relname = %s",
+        (schema, schema, table),
+    )
+    return [tuple(row) for row in cursor.fetchall() if row[1] != table]
+
+
+def _drop_orphans(cursor, child, source, references, skip_column):
+    """ Drop the staged rows pointing at a parent row the target does not have, return count
+
+    A version the backup skipped (ON CONFLICT DO NOTHING) or never carried
+    leaves its association rows behind, failing the whole restore otherwise.
+    """
+    dropped = 0
+    for column, parent, parent_column in references:
+        if column == skip_column:
+            continue
+        cursor.execute(
+            "DELETE FROM {source} s WHERE s.{column} IS NOT NULL AND NOT EXISTS"
+            " (SELECT 1 FROM {parent} p WHERE p.{parent_column} = s.{column})".format(
+                source=source, column=_quote(column),
+                parent=_quote(parent), parent_column=_quote(parent_column),
+            )
+        )
+        dropped += max(cursor.rowcount, 0)
+    #
+    if dropped:
+        log.warning(
+            "project_restore: %s rows of %s reference rows the target does not have;"
+            " skipping them", dropped, child,
+        )
+    return dropped
+
+
 def _staging_name(table, suffix=""):
     return "pg_temp.{}".format(_quote("restore_{}{}".format(table, suffix)))
 
@@ -978,7 +1024,9 @@ def _merge_by_key(cursor, table, key, source, columns):
     return mapping, merged, inserted
 
 
-def _flush_staged(cursor, staged, children, columns_by_table, summary):
+def _flush_staged(  # pylint: disable=R0913
+        cursor, staged, children, columns_by_table, summary, child_references=None,
+):
     """ Apply the staged rows: merged tables first, then the rows referencing them """
     mappings = {}
     #
@@ -999,6 +1047,12 @@ def _flush_staged(cursor, staged, children, columns_by_table, summary):
     for child, (parent, column) in children.items():
         if child not in staged:
             continue
+        #
+        orphans = _drop_orphans(
+            cursor, child, staged[child], (child_references or {}).get(child, ()), column,
+        )
+        if orphans:
+            summary["orphan_rows"][child] = orphans
         #
         columns = sorted(columns_by_table[child])
         select_list = ", ".join(
@@ -1134,6 +1188,9 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
             if parent in existing:
                 for child, column in referencing_columns(cursor, schema, parent).items():
                     children[child] = (parent, column)
+        child_references = {
+            child: foreign_key_references(cursor, schema, child) for child in children
+        }
         #
         if requested and include_parents:
             requested = expand_with_parents(requested, foreign_key_parents(cursor, schema))
@@ -1163,6 +1220,7 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
         "dropped_columns": {},
         "dropped_values": 0,
         "filled_columns": {},
+        "orphan_rows": {},
     }
     #
     truncate_targets = []
@@ -1311,7 +1369,9 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
                 summary["total_rows"] += cursor.rowcount
         #
         try:
-            _flush_staged(cursor, staged, children, columns_by_table, summary)
+            _flush_staged(
+                cursor, staged, children, columns_by_table, summary, child_references,
+            )
             if with_chats:
                 context = dict(chat_context or {}, member_user_ids=member_user_ids)
                 summary["chats"], attachments = chat_restore.merge_chats(
