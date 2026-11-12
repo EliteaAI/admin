@@ -172,6 +172,10 @@ class Module(module.ModuleModel):
             ("configuration.evaluation.platform_dimensions.create", True),
             ("configuration.evaluation.platform_dimensions.edit", True),
             ("configuration.evaluation.platform_dimensions.delete", True),
+            # Environment-wide scheduled evaluation
+            ("configuration.evaluation.auto.view", False),
+            ("configuration.evaluation.auto.edit", True),
+            ("configuration.evaluation.auto.run", True),
         ):
             _eval_roles = {
                 "super_admin": True,
