@@ -473,9 +473,14 @@ class FakeRestoreCursor:
         lowered = sql.lower()
         self.rowcount = 1 if lowered.startswith("insert") else 0
         tables = self.connection.tables
-        if "from information_schema.tables" in lowered:
+        if "from information_schema.tables" in lowered or "c.relkind in ('r', 'p')" in lowered:
             self._result = [(table,) for table in tables]
-        elif "from information_schema.columns" in lowered and "is_nullable" not in lowered:
+        elif "attnotnull" in lowered:
+            self._result = []
+        elif "format_type(a.atttypid" in lowered:
+            self._result = [(table, column, "text") for table, columns in tables.items() for column in columns]
+        elif ("from information_schema.columns" in lowered and "is_nullable" not in lowered) \
+                or "from pg_attribute" in lowered:
             self._result = [(table, column) for table, columns in tables.items() for column in columns]
         else:
             self._result = []

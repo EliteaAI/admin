@@ -68,6 +68,16 @@ SETVAL_RE = re.compile(
     r"\s*true\s*\)\s*;?\s*$",
     re.IGNORECASE | re.DOTALL,
 )
+# The shape project_backup._iter_table_sql emits: a quoted table, a quoted
+# column list and FROM stdin. The statement itself is never executed: the
+# rows are loaded by a COPY the restore builds, into a table of its own.
+COPY_RE = re.compile(
+    r'^copy\s+"((?:[^"]|"")+)"\s*\(\s*"(?:[^"]|"")*"(?:\s*,\s*"(?:[^"]|"")*")*\s*\)'
+    r'\s+from\s+stdin\s*$',
+    re.IGNORECASE,
+)
+# What switches the statement splitter to reading COPY data
+COPY_START_RE = re.compile(r"^copy\s.*\sfrom\s+stdin\s*$", re.IGNORECASE | re.DOTALL)
 TRANSACTION_RE = re.compile(
     r"^(begin|commit|rollback|start\s+transaction|end)\b", re.IGNORECASE
 )
@@ -81,6 +91,8 @@ INSERT_TAIL_RE = re.compile(
 INSERT_SUFFIX_RE = re.compile(
     r"(?:\s*on\s+conflict\s+do\s+nothing)?\s*;?\s*$", re.IGNORECASE
 )
+# Characters at the end of an INSERT tail the suffix is looked for in
+INSERT_SUFFIX_SCAN = 4096
 # Value grammar of project_backup._literal (psycopg2 mogrify output): tuple
 # punctuation, NULL/TRUE/FALSE, numbers, quoted strings ('' doubling, E''
 # backslash escapes) and ::type casts. Identifiers, operators and function
@@ -121,6 +133,7 @@ PREAMBLE_LINE_RE = re.compile(
 )
 
 STATEMENT_INSERT = "insert"
+STATEMENT_COPY = "copy"
 STATEMENT_SETVAL = "setval"
 STATEMENT_TRANSACTION = "transaction"
 STATEMENT_SET = "set"
@@ -199,8 +212,11 @@ def _is_literal_insert_tail(tail):
     if match is None:
         return False
     #
-    values = match.group(1)
-    values = values[:INSERT_SUFFIX_RE.search(values).start()]
+    values = match.group(1).rstrip()
+    # Only the end can hold the suffix: a search over the whole tail retried
+    # from every position, which took seconds on a large INSERT
+    end = max(len(values) - INSERT_SUFFIX_SCAN, 0)
+    values = values[:INSERT_SUFFIX_RE.search(values, end).start()]
     #
     index = 0
     length = len(values)
@@ -593,14 +609,54 @@ def parse_header(head):
     return result
 
 
+class CopyData(str):
+    """ A piece of the data lines following a COPY ... FROM stdin statement """
+
+
+# Yielded once the data of a COPY statement ends
+COPY_END = CopyData()
+
+
+class CopyRows:
+    """ File-like reader over the data of the COPY statement just yielded,
+        pulling from the same statement stream; copy_expert reads it """
+
+    def __init__(self, stream):
+        self._stream = stream
+        self._done = False
+
+    def read(self, size=-1):  # pylint: disable=W0613
+        if self._done:
+            return ""
+        for item in self._stream:
+            if item is COPY_END:
+                break
+            if item:
+                return str(item)
+        self._done = True
+        return ""
+
+    def drain(self):
+        while self.read():
+            pass
+
+
 def iter_statements(chunks):  # pylint: disable=R0912,R0915
-    """ Split a stream of SQL text into executable statements, comments stripped """
+    """ Split a stream of SQL text into executable statements, comments stripped
+
+    A COPY ... FROM stdin statement is followed by its data as CopyData pieces
+    and COPY_END; the data is passed on as it is, not parsed.
+    """
     code = []
+    # Characters of the chunks read since the statement in progress started:
+    # summing the parts of code after every chunk was quadratic in its length
+    statement_bytes = 0
     state = "normal"
     string_escapes = False
     depth = 0
     tag = ""
     pending = ""
+    copy_line_start = False
     #
     for chunk in chunks:
         data = pending + chunk
@@ -665,13 +721,55 @@ def iter_statements(chunks):  # pylint: disable=R0912,R0915
                 if char == ";":
                     statement = "".join(code).strip()
                     code = []
+                    statement_bytes = -(index + 1)
                     index += 1
                     if statement:
                         yield statement
+                        if COPY_START_RE.match(statement):
+                            state = "copy_header"
                     continue
                 #
                 code.append(char)
                 index += 1
+                continue
+            #
+            if state == "copy_header":
+                # The rest of the COPY line; its data starts on the next one
+                newline = data.find("\n", index)
+                if newline < 0:
+                    index = length
+                else:
+                    index = newline + 1
+                    state = "copy_data"
+                    copy_line_start = True
+                continue
+            #
+            if state == "copy_data":
+                if copy_line_start:
+                    if length - index < 3:
+                        pending = data[index:]
+                        index = length
+                        continue
+                    if data.startswith("\\.\n", index):
+                        yield COPY_END
+                        index += 3
+                        statement_bytes = -index
+                        state = "normal"
+                        continue
+                found = data.find("\n\\.\n", index)
+                if found < 0:
+                    keep = max(index, length - 3)
+                    if keep > index:
+                        yield CopyData(data[index:keep])
+                        copy_line_start = data[keep - 1] == "\n"
+                    pending = data[keep:]
+                    index = length
+                    continue
+                yield CopyData(data[index:found + 1])
+                yield COPY_END
+                index = found + 4
+                statement_bytes = -index
+                state = "normal"
                 continue
             #
             if state == "line_comment":
@@ -764,12 +862,28 @@ def iter_statements(chunks):  # pylint: disable=R0912,R0915
                 state = "normal"
                 continue
         #
-        if sum(len(part) for part in code) > MAX_STATEMENT_BYTES:
+        if state in ("copy_header", "copy_data"):
+            statement_bytes = 0
+            continue
+        statement_bytes += length - len(pending)
+        if statement_bytes > MAX_STATEMENT_BYTES:
             raise ValueError("Statement exceeds the size limit")
+    #
+    if state in ("copy_header", "copy_data"):
+        if pending.rstrip("\r\n") == "\\.":
+            yield COPY_END
+            return
+        raise ValueError("COPY data is not terminated")
     #
     statement = "".join(code).strip()
     if statement:
         yield statement
+
+
+def copy_column_names(statement):
+    """ Column names a COPY statement of a safe backup loads, in order """
+    columns = statement[statement.index("("):statement.rindex(")")]
+    return [name.replace('""', '"') for name in re.findall(r'"((?:[^"]|"")*)"', columns)]
 
 
 def classify_statement(statement):
@@ -782,6 +896,10 @@ def classify_statement(statement):
         if not _is_literal_insert_tail(statement[match.end():]):
             return STATEMENT_UNSUPPORTED, None
         return STATEMENT_INSERT, match.group(1) or match.group(2)
+    #
+    match = COPY_RE.match(statement)
+    if match is not None:
+        return STATEMENT_COPY, match.group(1).replace('""', '"')
     #
     match = SETVAL_RE.match(statement)
     if match is not None:
@@ -833,6 +951,16 @@ REQUIRED_COLUMNS_SQL = (
 )
 
 
+COLUMN_TYPES_SQL = (
+    "select c.relname, a.attname, format_type(a.atttypid, a.atttypmod)"
+    " from pg_attribute a"
+    " join pg_class c on c.oid = a.attrelid"
+    " join pg_namespace n on n.oid = c.relnamespace"
+    " where n.nspname = %s and c.relkind in ('r', 'p', 'f')"
+    " and a.attnum > 0 and not a.attisdropped"
+)
+
+
 def list_schema_tables(cursor, schema):
     """ Base tables present in a schema """
     cursor.execute(SCHEMA_TABLES_SQL, (schema,))
@@ -846,6 +974,16 @@ def schema_columns(cursor, schema):
     columns = {}
     for table, column in cursor.fetchall():
         columns.setdefault(table, set()).add(column)
+    return columns
+
+
+def column_types(cursor, schema):
+    """ table -> {column: its type as SQL} """
+    cursor.execute(COLUMN_TYPES_SQL, (schema,))
+    #
+    columns = {}
+    for table, column, data_type in cursor.fetchall():
+        columns.setdefault(table, {})[column] = data_type
     return columns
 
 
@@ -972,8 +1110,8 @@ def _staging_name(table, suffix=""):
     return "pg_temp.{}".format(_quote("restore_{}{}".format(table, suffix)))
 
 
-def _stage_insert(cursor, statement, table, staged):
-    """ Point an INSERT at the temp table collecting the rows of `table` """
+def _ensure_staged(cursor, table, staged):
+    """ The temp table collecting the rows of `table` """
     if table not in staged:
         staged[table] = _staging_name(table)
         cursor.execute(
@@ -981,9 +1119,89 @@ def _stage_insert(cursor, statement, table, staged):
                 staged[table], _quote(table),
             )
         )
+    return staged[table]
+
+
+def _stage_insert(cursor, statement, table, staged):
+    """ Point an INSERT at the temp table collecting the rows of `table` """
+    _ensure_staged(cursor, table, staged)
     #
     match = INSERT_RE.match(statement)
     return "INSERT INTO {}{}".format(staged[table], statement[match.end():])
+
+
+def load_copy(  # pylint: disable=R0913,R0914
+        cursor, table, names, rows, destination, types,
+        missing=(), replacements=None, required=None,
+):
+    """ Load the data of a COPY block into `destination`, return
+        (rows inserted, dropped non-NULL values, filled columns)
+
+    The rows go to a temp table of text columns named like the backup's, then
+    into the destination with one INSERT ... SELECT. Postgres parses the data,
+    so no value is ever read as SQL, and the schema drift rewrite_insert
+    handles for an INSERT is a select list here: columns the target lacks are
+    left out, owner columns repointed, required columns filled where NULL.
+    """
+    replacements = replacements or {}
+    required = required or {}
+    dropped = frozenset(missing)
+    missing = [name for name in names if name in dropped]
+    kept = [name for name in names if name not in dropped]
+    #
+    added = [
+        (name, fill_literal(table, name, data_type))
+        for name, data_type in required.items()
+        if name not in names
+    ]
+    if not kept and not added:
+        raise ValueError("no column of {} exists in the target schema".format(table))
+    #
+    loader = _staging_name(table, "__load")
+    cursor.execute("DROP TABLE IF EXISTS {}".format(loader))
+    cursor.execute("CREATE TEMP TABLE {} ({}) ON COMMIT DROP".format(
+        loader, ", ".join("{} text".format(_quote(name)) for name in names),
+    ))
+    cursor.copy_expert(
+        "COPY {} ({}) FROM STDIN".format(loader, ", ".join(_quote(name) for name in names)), rows,
+    )
+    #
+    nullable = [name for name in kept if name in required and name not in replacements]
+    checks = ["count({})".format(_quote(name)) for name in missing] + [
+        "count(*) filter (where {} is null)".format(_quote(name)) for name in nullable
+    ]
+    counts = ()
+    if checks:
+        cursor.execute("SELECT {} FROM {}".format(", ".join(checks), loader))
+        counts = cursor.fetchone()
+    dropped_values = sum(counts[:len(missing)])
+    # Only a column that actually holds a NULL needs a value, as for an INSERT
+    fills = {
+        name: fill_literal(table, name, required[name])
+        for name, count in zip(nullable, counts[len(missing):]) if count
+    }
+    filled = [name for name, _ in added] + list(fills)
+    #
+    expressions = []
+    for name in kept:
+        if name in replacements:
+            expressions.append(str(int(replacements[name])))
+        elif name in fills:
+            expressions.append("COALESCE(s.{}::{}, {})".format(_quote(name), types[name], fills[name]))
+        else:
+            expressions.append("s.{}::{}".format(_quote(name), types[name]))
+    expressions.extend(literal for _, literal in added)
+    #
+    cursor.execute(
+        "INSERT INTO {} ({}) SELECT {} FROM {} s ON CONFLICT DO NOTHING".format(
+            destination, ", ".join(_quote(name) for name in kept + [name for name, _ in added]),
+            ", ".join(expressions), loader,
+        )
+    )
+    inserted = max(cursor.rowcount, 0)
+    cursor.execute("DROP TABLE {}".format(loader))
+    #
+    return inserted, dropped_values, filled
 
 
 def _merge_by_key(cursor, table, key, source, columns):
@@ -1110,6 +1328,8 @@ def scan_backup_tables(open_chunks):
     tables = set()
     #
     for statement in iter_statements(open_chunks()):
+        if isinstance(statement, CopyData):
+            continue
         _, table = classify_statement(statement)
         if table:
             tables.add(table)
@@ -1218,6 +1438,7 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
         #
         columns_by_table = schema_columns(cursor, schema)
         required_by_table = required_columns(cursor, schema)
+        types_by_table = column_types(cursor, schema)
         #
         children = {}
         for parent in MERGED_BY_KEY_TABLES:
@@ -1316,8 +1537,13 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
             summary["truncated_tables"] = truncate_targets
             summary["truncate_cascade"] = True
         #
-        for statement in iter_statements(open_chunks()):
+        statements = iter_statements(open_chunks())
+        for statement in statements:
+            if isinstance(statement, CopyData):
+                raise ValueError("COPY data outside a COPY statement in backup file")
+            #
             kind, table = classify_statement(statement)
+            rows = CopyRows(statements) if kind == STATEMENT_COPY else None
             #
             if kind in (STATEMENT_TRANSACTION, STATEMENT_SET):
                 continue
@@ -1334,12 +1560,11 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
                     "table not allowed in safe restore: {}".format(table)
                 )
             #
-            if table is None or table not in existing or table in chat_tables_skipped:
+            if table is None or table not in existing or table in chat_tables_skipped \
+                    or (requested and table not in requested):
                 skipped_tables.add(table or "?")
-                continue
-            #
-            if requested and table not in requested:
-                skipped_tables.add(table)
+                if rows is not None:
+                    rows.drain()
                 continue
             #
             # A backup taken before a migration carries columns the target no
@@ -1377,6 +1602,40 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
                         and table not in truncate_targets:
                     cursor.execute("DELETE FROM {}".format(_quote(table)))
                     replaced_tables.add(table)
+            #
+            if kind == STATEMENT_COPY:
+                names = copy_column_names(statement)
+                if table in REPLACED_ON_RESTORE_TABLES and table not in replaced_tables \
+                        and table not in truncate_targets:
+                    cursor.execute("DELETE FROM {}".format(_quote(table)))
+                    replaced_tables.add(table)
+                seen_tables.add(table)
+                destination = _ensure_staged(cursor, table, staged) \
+                    if table in staged_candidates else _quote(table)
+                missing = [name for name in names if name not in known_columns]
+                try:
+                    inserted, dropped_values, filled = load_copy(
+                        cursor, table, names, rows, destination, types_by_table.get(table, {}),
+                        missing=missing,
+                        replacements={} if table in CHAT_BACKUP_TABLES else
+                        owner_replacements(table, owner_user_id, owner_project_id),
+                        required=required_by_table.get(table, {}),
+                    )
+                except psycopg2.Error as exc:
+                    raise ValueError(
+                        "copy failed on {}: {}".format(
+                            table, str(getattr(exc, "pgerror", None) or exc).strip(),
+                        )
+                    ) from exc
+                if missing:
+                    _record_dropped(summary, schema, table, missing, dropped_values)
+                if filled:
+                    _record_filled(summary, schema, table, filled)
+                summary["statements"] += 1
+                if table not in staged and inserted:
+                    summary["rows"][table] = summary["rows"].get(table, 0) + inserted
+                    summary["total_rows"] += inserted
+                continue
             #
             if kind == STATEMENT_SETVAL:
                 # pg_get_serial_sequence() errors out on an unknown column

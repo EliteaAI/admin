@@ -249,7 +249,7 @@ def _deletes_held_off(database, project_id):
 def test_backup_sql_carries_the_manifest_rows(connection):
     text = "".join(pb.iter_project_backup_sql(connection, SOURCE_ID, SOURCE, "Source"))
     connection.rollback()
-    assert 'INSERT INTO "skill_version_files"' in text
+    assert 'COPY "skill_version_files" (' in text
     assert sha(LOGO) in text
 
 

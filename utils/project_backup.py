@@ -119,7 +119,10 @@ JSON_DATA_TYPES = ("json", "jsonb")
 TEXT_DATA_TYPES = ("text", "character varying", "character", "citext")
 
 DEFAULT_CHUNK_SIZE = 500
-ROWS_PER_STATEMENT = 100
+ROWS_PER_CHUNK = 1000
+
+# Characters COPY text format escapes inside a value
+COPY_ESCAPES = str.maketrans({"\\": "\\\\", "\t": "\\t", "\n": "\\n", "\r": "\\r"})
 
 
 def is_sensitive_name(name):
@@ -400,29 +403,26 @@ def order_tables(tables, edges):
     return ordered
 
 
-def _literal(mogrify_cursor, value):
-    if isinstance(value, (dict, list)):
-        value = psycopg2.extras.Json(value, dumps=json.dumps)
-    return mogrify_cursor.mogrify("%s", (value,)).decode("utf-8", "replace")
+def _copy_value(value):
+    """ A value in COPY text format """
+    if value is None:
+        return "\\N"
+    return str(value).translate(COPY_ESCAPES)
 
 
 def _iter_table_sql(  # pylint: disable=R0913,R0914
-        dbapi_connection, mogrify_cursor, schema, table, columns, redactor,
+        dbapi_connection, schema, table, columns, redactor,
         chunk_size=DEFAULT_CHUNK_SIZE, order_by=(), row_filter=None,
 ):
-    """ Yield INSERT statements for a single table """
+    """ Yield the COPY block of a single table, then its row count """
     column_names = [name for name, _ in columns]
-    json_columns = {name for name, data_type in columns if data_type in JSON_DATA_TYPES}
     column_list = ", ".join(_quote(name) for name in column_names)
     #
-    # JSON columns are read as text: psycopg2 decodes them to Python objects,
-    # which turns a stored 'null' into None and then into SQL NULL - breaking
-    # NOT NULL json columns on restore.
+    # Every value is read as its text form, which COPY reads back as is. For
+    # JSON columns this also keeps a stored 'null' apart from SQL NULL, which
+    # psycopg2 would decode to None.
     #
-    select_list = ", ".join(
-        "{}::text".format(_quote(name)) if name in json_columns else _quote(name)
-        for name in column_names
-    )
+    select_list = ", ".join("{}::text".format(_quote(name)) for name in column_names)
     #
     cursor = dbapi_connection.cursor(
         name="project_backup_{}".format(re.sub(r"[^0-9a-zA-Z_]", "_", table)),
@@ -432,10 +432,9 @@ def _iter_table_sql(  # pylint: disable=R0913,R0914
     row_count = 0
     buffer = []
     #
-    # Rows are split across several INSERT statements and FK checks run at the end
-    # of each one, so a self-referencing table must emit parents first. Ordering by
-    # the referenced (identity/serial) column does that: a row can only point at an
-    # already existing row, which therefore has a lower value.
+    # A restore of an older INSERT backup checks FKs per statement, so rows of
+    # a self-referencing table are still emitted parents first: ordering by
+    # the referenced (identity/serial) column does that.
     #
     query = "select {} from {}.{}".format(select_list, _quote(schema), _quote(table))
     if row_filter:
@@ -450,32 +449,23 @@ def _iter_table_sql(  # pylint: disable=R0913,R0914
         #
         for row in cursor:
             values = redactor.apply(dict(zip(column_names, row)))
-            buffer.append(
-                "({})".format(
-                    ", ".join(
-                        _literal(mogrify_cursor, values[name])
-                        for name in column_names
-                    )
-                )
-            )
+            if not row_count:
+                buffer.append("COPY {} ({}) FROM stdin;\n".format(_quote(table), column_list))
+            buffer.append("\t".join(_copy_value(values[name]) for name in column_names) + "\n")
             row_count += 1
             #
-            if len(buffer) >= ROWS_PER_STATEMENT:
-                yield _make_insert(table, column_list, buffer)
+            if len(buffer) >= ROWS_PER_CHUNK:
+                yield "".join(buffer)
                 buffer = []
     finally:
         cursor.close()
     #
+    if row_count:
+        buffer.append("\\.\n")
     if buffer:
-        yield _make_insert(table, column_list, buffer)
+        yield "".join(buffer)
     #
     yield row_count
-
-
-def _make_insert(table, column_list, buffer):
-    return "INSERT INTO {} ({}) VALUES\n    {}\nON CONFLICT DO NOTHING;\n".format(
-        _quote(table), column_list, ",\n    ".join(buffer),
-    )
 
 
 def iter_project_backup_sql(  # pylint: disable=R0913,R0914,R0915
@@ -515,6 +505,11 @@ def iter_project_backup_sql(  # pylint: disable=R0913,R0914,R0915
             table: _list_sequence_columns(cursor, schema, table) for table in tables
         }
         self_references = _self_reference_columns(cursor, schema)
+        # Dates in a form COPY reads back whatever DateStyle the target uses
+        cursor.execute(
+            "select set_config('datestyle', 'ISO, YMD', true),"
+            " set_config('intervalstyle', 'postgres', true)"
+        )
     #
     generated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     skipped = sorted(table for table in all_tables if table in excluded)
@@ -527,35 +522,34 @@ def iter_project_backup_sql(  # pylint: disable=R0913,R0914,R0915
     counts = {}
     redaction_hits = 0
     #
-    with dbapi_connection.cursor() as mogrify_cursor:
-        for table in tables:
-            table_columns = columns[table]
-            if not table_columns:
-                continue
-            #
-            redactor = _Redactor(table_columns, enabled=safe_mode and table not in SAFE_MODE_VERBATIM_TABLES)
-            yield "--\n-- {}\n--\n".format(table)
-            #
-            for item in _iter_table_sql(
-                    dbapi_connection, mogrify_cursor, schema, table,
-                    table_columns, redactor, chunk_size,
-                    self_references.get(table, ()), row_filters.get(table),
-            ):
-                if isinstance(item, int):
-                    counts[table] = item
-                else:
-                    yield item
-            #
-            redaction_hits += redactor.hits
-            #
-            if counts.get(table):
-                for column in sequences[table]:
-                    yield (
-                        "SELECT setval(pg_get_serial_sequence('\"{}\"', '{}'),"
-                        " GREATEST((SELECT COALESCE(MAX({}), 0) FROM {}), 1), true);\n"
-                    ).format(table, column, _quote(column), _quote(table))
-            #
-            yield "\n"
+    for table in tables:
+        table_columns = columns[table]
+        if not table_columns:
+            continue
+        #
+        redactor = _Redactor(table_columns, enabled=safe_mode and table not in SAFE_MODE_VERBATIM_TABLES)
+        yield "--\n-- {}\n--\n".format(table)
+        #
+        for item in _iter_table_sql(
+                dbapi_connection, schema, table,
+                table_columns, redactor, chunk_size,
+                self_references.get(table, ()), row_filters.get(table),
+        ):
+            if isinstance(item, int):
+                counts[table] = item
+            else:
+                yield item
+        #
+        redaction_hits += redactor.hits
+        #
+        if counts.get(table):
+            for column in sequences[table]:
+                yield (
+                    "SELECT setval(pg_get_serial_sequence('\"{}\"', '{}'),"
+                    " GREATEST((SELECT COALESCE(MAX({}), 0) FROM {}), 1), true);\n"
+                ).format(table, column, _quote(column), _quote(table))
+        #
+        yield "\n"
     #
     yield _footer(counts, redaction_hits)
 
@@ -572,6 +566,7 @@ def _header(  # pylint: disable=R0913
         "-- project_name: {}".format(project_name or "-"),
         "-- schema:       {}".format(schema),
         "-- mode:         {}".format("safe" if safe_mode else "full"),
+        "-- format:       copy",
         "-- generated_at: {}".format(generated_at),
     ]
     for key, value in (header_extra or {}).items():
