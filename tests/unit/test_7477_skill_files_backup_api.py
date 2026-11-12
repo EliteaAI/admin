@@ -345,18 +345,87 @@ def _skill_zip(utils, chats_included=None, project_id=2):
     ))
 
 
+class FakeJobStore:
+    """ The job row a restore request creates, kept in memory """
+
+    def __init__(self):
+        self.jobs = {}
+
+    def active(self, project_id):
+        return None
+
+    def create(self, project_id, user_id, mode, options, artifact):
+        job = {"id": "job-1", "project_id": project_id, "user_id": user_id, "mode": mode,
+               "options": options, "artifact": artifact}
+        self.jobs[job["id"]] = job
+        return job
+
+    def fail(self, job_id, *args, **kwargs):
+        raise AssertionError("the restore request failed its job: {}".format(args))
+
+
+class FakeWorkers:
+    """ Takes the worker start: the test runs the worker side itself """
+
+    def __init__(self, limit=1):
+        self.started = []
+        self.limit = limit
+        self.slots = 0
+
+    def reserve(self):
+        if self.slots >= self.limit:
+            return False
+        self.slots += 1
+        return True
+
+    def release(self):
+        self.slots -= 1
+
+    def start(self, job_id, payload, on_exit, open_storage=None):
+        self.started.append(dict(payload, open_storage=open_storage))
+        return 1
+
+
 def _upload(endpoints, data, result=None, **form):
+    """ A restore end to end: the request starts the job, then the worker applies it
+
+    Returns the body and status the job ends with - the response of a restore
+    that waits for its job - and the arguments restore_safe_backup got.
+    """
     captured = {}
 
     def restore_safe_backup(connection, **kwargs):
         captured.update(kwargs)
         return dict(result or {})
-    endpoints.restore.restore_safe_backup = restore_safe_backup
+    runner = endpoints.restore.restore_runner
+    runner.restore_safe_backup = restore_safe_backup
     endpoints.state.connection = FakeConnection([("information_schema.schemata", [(1,)])])
-    endpoints.flask.request.form = dict(form)
+    # The job is followed by the caller; the request answers 202 right away
+    endpoints.flask.request.form = dict({"background": "true"}, **form)
     endpoints.flask.request.files = {"file": types.SimpleNamespace(filename="backup.zip", stream=io.BytesIO(data))}
-    body, status = endpoints.restore.apply_uploaded_backup(2)
-    return body, status, captured
+    #
+    store, workers = FakeJobStore(), FakeWorkers()
+    spool_dir = runner.spool_dir({})
+    module = types.SimpleNamespace(
+        restore_job_store=lambda: store, restore_workers=workers, restore_job_schema="centry",
+        restore_settings={"spool_dir": spool_dir, "max_archive_bytes": 10 ** 9, "lock_timeout": "30s"},
+        restore_worker_database=lambda: {},
+    )
+    body, status = endpoints.restore.apply_uploaded_backup(module, 2)
+    if status != 202:
+        return body, status, captured
+    #
+    payload = workers.started[0]
+    # The worker's storage calls are served on the platform client the request hands over
+    storage = payload["open_storage"]() if payload["with_storage"] else None
+    try:
+        body = runner.apply_job(
+            endpoints.state.connection, store.jobs[payload["job_id"]], payload["spool_path"], None,
+            storage, max_archive_bytes=10 ** 9, lock_timeout="30s",
+        )
+    finally:
+        runner.remove_spool(payload["spool_path"])
+    return body, 200, captured
 
 
 def test_restore_of_a_zip_hands_the_archive_to_the_skill_file_restorer(endpoints):
@@ -406,3 +475,100 @@ def test_skill_files_zip_with_chats_but_no_attachment_files_only_relinks_attachm
     assert status == 200
     assert body["artifact"]["has_attachment_files"] is False
     assert captured["restore_chats"] == "without_attachments"
+
+
+def _request(endpoints, data, workers=None, **form):
+    """ The restore request alone, against an in-memory job store and worker pool """
+    endpoints.state.connection = FakeConnection([("information_schema.schemata", [(1,)])])
+    endpoints.flask.request.form = dict(form)
+    endpoints.flask.request.files = {"file": types.SimpleNamespace(filename="backup.sql", stream=io.BytesIO(data))}
+    store, workers = FakeJobStore(), workers or FakeWorkers()
+    runner = endpoints.restore.restore_runner
+    module = types.SimpleNamespace(
+        restore_job_store=lambda: store, restore_workers=workers, restore_job_schema="centry",
+        restore_settings={"spool_dir": runner.spool_dir({}), "max_archive_bytes": 10 ** 9, "lock_timeout": "30s"},
+        restore_worker_database=lambda: {},
+    )
+    return endpoints.restore.apply_uploaded_backup(module, 2), store, workers
+
+
+def test_a_client_that_does_not_ask_for_a_job_waits_for_the_result(endpoints, monkeypatch):
+    """ An older UI or a script keeps the synchronous answer it always got """
+    waited = []
+    monkeypatch.setattr(endpoints.restore, "_wait_for_job", lambda store, job_id: (
+        waited.append(job_id) or ({"ok": True, "result": {"total_rows": 1}}, 200)))
+    (body, status), _, workers = _request(endpoints, _sql_header(endpoints.utils).encode("utf-8"))
+    assert status == 200
+    assert body == {"ok": True, "result": {"total_rows": 1}}
+    assert waited == ["job-1"]
+    endpoints.restore.restore_runner.remove_spool(workers.started[0]["spool_path"])
+
+
+def test_background_answers_202_with_the_job(endpoints):
+    (body, status), _, workers = _request(endpoints, _sql_header(endpoints.utils).encode("utf-8"), background="true")
+    assert status == 202
+    assert body["job_id"] == "job-1" and body["status"] == "running"
+    endpoints.restore.restore_runner.remove_spool(workers.started[0]["spool_path"])
+
+
+@pytest.mark.parametrize("form, expected", [
+    ({"size": "123456789"}, 123456789),
+    ({}, None),
+], ids=["slice with its real size", "whole file without size"])
+def test_inspect_reports_the_size_of_the_whole_file(endpoints, form, expected):
+    data = _sql_header(endpoints.utils).encode("utf-8") + b"-- padding\n" * 200000
+    (body, status), _, workers = _request(endpoints, data, inspect="true", **form)
+    assert status == 200 and body["inspect"] is True
+    assert body["artifact"]["size"] == (expected if expected is not None else len(data))
+    assert workers.started == []
+
+
+def test_a_busy_pod_refuses_before_writing_the_upload_to_disk(endpoints, monkeypatch):
+    spooled = []
+    monkeypatch.setattr(endpoints.restore.restore_runner, "spool_upload",
+                        lambda *args, **kwargs: spooled.append(1) or ("/nowhere", 0))
+    endpoints.state.connection = FakeConnection([("information_schema.schemata", [(1,)])])
+    endpoints.flask.request.form = {"background": "true"}
+    endpoints.flask.request.files = {"file": types.SimpleNamespace(
+        filename="backup.sql", stream=io.BytesIO(_sql_header(endpoints.utils).encode("utf-8")))}
+    store = FakeJobStore()
+    module = types.SimpleNamespace(
+        restore_job_store=lambda: store, restore_workers=FakeWorkers(limit=0),
+        restore_job_schema="centry", restore_settings={}, restore_worker_database=lambda: {},
+    )
+    body, status = endpoints.restore.apply_uploaded_backup(module, 2)
+    assert status == 503 and body["error"] == "restore_capacity_busy"
+    assert spooled == [] and store.jobs == {}
+
+
+def test_a_second_request_can_not_take_the_slot_while_the_first_spools(endpoints, monkeypatch):
+    """ The spool yields to other requests: the slot is taken before it, not checked """
+    workers = FakeWorkers(limit=1)
+    runner = endpoints.restore.restore_runner
+    real_spool = runner.spool_upload
+    seen = []
+
+    def spool_while_another_request_arrives(head, stream, directory):
+        # What gevent would run while this request writes the upload to disk
+        (body, status), _, _ = _request(endpoints, _sql_header(endpoints.utils).encode("utf-8"),
+                                        workers=workers, background="true")
+        seen.append(status)
+        return real_spool(head, stream, directory)
+    monkeypatch.setattr(runner, "spool_upload", spool_while_another_request_arrives)
+    (body, status), _, _ = _request(endpoints, _sql_header(endpoints.utils).encode("utf-8"),
+                                    workers=workers, background="true")
+    assert status == 202
+    assert seen == [503]
+    assert len(workers.started) == 1 and workers.slots == 1
+    runner.remove_spool(workers.started[0]["spool_path"])
+
+
+def test_a_failed_request_gives_its_slot_back(endpoints, monkeypatch):
+    workers = FakeWorkers(limit=1)
+    monkeypatch.setattr(endpoints.restore.restore_runner, "spool_upload",
+                        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk full")))
+    (body, status), _, _ = _request(endpoints, _sql_header(endpoints.utils).encode("utf-8"),
+                                    workers=workers, background="true")
+    assert status == 500
+    assert workers.slots == 0
+

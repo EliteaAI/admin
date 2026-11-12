@@ -25,7 +25,7 @@ import psycopg2  # pylint: disable=E0401
 from pylon.core.tools import log  # pylint: disable=E0611,E0401
 
 from .project_backup import SAFE_MODE_EXCLUDED_TABLES
-from .chat_backup import CHAT_BACKUP_TABLES, CHATS_NONE, CHAT_OPTIONS
+from .chat_backup import CHAT_BACKUP_TABLES, CHATS_NONE, CHATS_WITH_ATTACHMENTS, CHAT_OPTIONS
 from . import chat_restore
 from .skill_files_backup import SKILL_FILES_TABLE, SKILL_FILE_WRITE_LOCK
 
@@ -42,6 +42,12 @@ PG_DUMP_MARKERS = (
 
 HEADER_SCAN_BYTES = 262144
 MAX_STATEMENT_BYTES = 67108864
+
+# The first bytes a client sends to read what a file carries: enough for the
+# envelope header and its first frame, which holds the backup header
+INSPECT_BYTES = 1048576 + 16384
+
+LOCK_ERROR = "the project is in use and its tables could not be locked; retry the restore later"
 
 HEADER_LINE_RE = re.compile(r"^--\s*([a-z_]+):\s*(.*?)\s*$")
 
@@ -491,6 +497,66 @@ def detect_artifact_kind(head):
     if "INSERT INTO" in head.upper():
         return KIND_SAFE
     return None
+
+
+def inspect_head(head, master_key, with_text=False):
+    """ What an artifact carries, read from its first bytes only
+
+    head is the start of the uploaded file, possibly cut in the middle of an
+    encryption frame or of the archive. with_text also returns the decrypted
+    text of the head, (artifact, text). Every frame that is decrypted is still
+    verified; a cut after the first one only ends the read.
+    """
+    from . import backup_crypto  # pylint: disable=C0415
+    from . import chat_backup  # pylint: disable=C0415
+    #
+    encrypted = backup_crypto.is_encrypted(head[:len(backup_crypto.ENVELOPE_MAGIC)])
+    if encrypted:
+        if master_key is None:
+            raise ValueError(
+                "this backup is encrypted but SECRETS_MASTER_KEY is not configured on this setup"
+            )
+        plain = bytearray()
+        try:
+            for chunk in backup_crypto.iter_decrypt(iter([head]), master_key):
+                plain += chunk
+                if len(plain) >= HEADER_SCAN_BYTES:
+                    break
+        except ValueError:
+            if not plain:
+                raise
+        head = bytes(plain)
+    #
+    if chat_backup.is_zip(head):
+        info = chat_backup.read_zip_info(head)
+        if info is None:
+            raise ValueError("unrecognized backup file")
+        artifact = {
+            key: info.get(key) for key in (
+                "project_id", "project_name", "chats_count", "attachments_count", "attachments_size",
+            )
+        }
+        artifact["generated_at"] = info.get("created_at")
+        artifact["chats_included"] = info.get("chats_included") \
+            if info.get("chats_included") in CHAT_OPTIONS else CHATS_NONE
+        # A ZIP may carry only skill files: attachment files come with the chats that include them
+        artifact["has_attachment_files"] = artifact["chats_included"] == CHATS_WITH_ATTACHMENTS
+        artifact["skill_files_count"] = info.get("skill_files_count", 0)
+        artifact["kind"] = KIND_SAFE
+        text = ""
+    else:
+        text = head[:HEADER_SCAN_BYTES].decode("utf-8", "replace")
+        kind = detect_artifact_kind(text)
+        if kind is None:
+            raise ValueError("unrecognized backup file")
+        artifact = parse_header(text)
+        artifact["has_attachment_files"] = False
+        artifact["attachments_size"] = 0
+        artifact["skill_files_count"] = 0
+        artifact["kind"] = kind
+    #
+    artifact["encrypted"] = encrypted
+    return (artifact, text) if with_text else artifact
 
 
 def parse_header(head):
@@ -1018,6 +1084,7 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
         source_project_id=None, member_user_ids=None,
         backup_chats=CHATS_NONE, restore_chats=CHATS_NONE, chat_context=None,
         attachment_handler=None, skill_file_handler=None, project_id=None,
+        lock_timeout=None,
 ):
     """ Apply a safe (INSERT-only) backup to a schema, return a summary
 
@@ -1028,11 +1095,14 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
     the user asked for. Chats of a backup that carries them are skipped when
     not requested; otherwise the chat tables stay denied like before.
     attachment_handler(cursor, attachments, dry_run) uploads or re-links the
-    files of the restored attachment messages and returns a summary.
+    files of the restored attachment messages and returns a summary; its
+    prepare(dry_run), when present, uploads the files before any lock is taken.
     skill_file_handler(cursor, dry_run) uploads the skill file objects the
     restored rows reference before they commit and returns a summary.
     project_id is the target project: while the restore runs, elitea_core
     deletes none of its skill file objects.
+
+    lock_timeout bounds how long the restore waits for the project tables.
     """
     dbapi_connection = _dbapi_connection(raw_connection)
     requested = {table.strip() for table in (tables or ()) if table.strip()}
@@ -1068,6 +1138,8 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
         if requested and include_parents:
             requested = expand_with_parents(requested, foreign_key_parents(cursor, schema))
             requested = requested.difference(denied)
+    # The catalog reads opened a transaction; the one writing starts later
+    dbapi_connection.rollback()
     #
     unknown = sorted(requested.difference(existing))
     if unknown:
@@ -1120,9 +1192,15 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
     staged = {}
     deferred_setvals = []
     #
+    # Files go to storage before the transaction, not while the tables are locked
+    if with_chats and hasattr(attachment_handler, "prepare"):
+        attachment_handler.prepare(dry_run)
+    #
     cursor = dbapi_connection.cursor()
     #
     try:
+        if lock_timeout:
+            cursor.execute("SELECT set_config('lock_timeout', %s, true)", (lock_timeout,))
         cursor.execute("SET LOCAL search_path TO {}, public".format(_quote(schema)))
         # Before any TRUNCATE: truncating first deadlocks with a core delete holding the lock
         if project_id is not None:
@@ -1272,18 +1350,33 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
         #
         if dry_run:
             dbapi_connection.rollback()
+            if hasattr(attachment_handler, "cleanup"):
+                attachment_handler.cleanup()
         else:
             dbapi_connection.commit()
-    except Exception:
+            if hasattr(attachment_handler, "release_unused"):
+                attachment_handler.release_unused()
+    except Exception as exc:
         dbapi_connection.rollback()
         # Files uploaded for messages that were never committed
         if hasattr(attachment_handler, "cleanup"):
             attachment_handler.cleanup()
+        if _is_lock_timeout(exc):
+            raise ValueError(LOCK_ERROR) from exc
         raise
     finally:
         cursor.close()
     #
     return summary
+
+
+def _is_lock_timeout(error):
+    lock_error = getattr(psycopg2.errors, "LockNotAvailable", None)  # pylint: disable=E1101
+    while error is not None:
+        if lock_error is not None and isinstance(error, lock_error):
+            return True
+        error = error.__cause__
+    return False
 
 
 def pg_dump_schema(head):
@@ -1373,9 +1466,12 @@ def filter_unknown_settings(open_chunks, known_settings):
 
 def run_psql(  # pylint: disable=R0913,R0914
         open_chunks, schema, host, port, user, password, database,
-        dry_run=False, extra_args=(), known_settings=None,
+        dry_run=False, extra_args=(), known_settings=None, lock_timeout=None,
 ):
-    """ Feed a pg_dump artifact to psql inside a single transaction """
+    """ Feed a pg_dump artifact to psql inside a single transaction
+
+    lock_timeout bounds how long psql waits for the locks of the schema it rebuilds.
+    """
     import os  # pylint: disable=C0415
     import tempfile  # pylint: disable=C0415
     import subprocess  # pylint: disable=C0415
@@ -1402,6 +1498,11 @@ def run_psql(  # pylint: disable=R0913,R0914
     #
     environment = dict(os.environ)
     environment["PGPASSWORD"] = password or ""
+    if lock_timeout:
+        # A session setting: a SET in the dump preamble is filtered like any other
+        environment["PGOPTIONS"] = "{} -c lock_timeout={}".format(
+            environment.get("PGOPTIONS", ""), lock_timeout,
+        ).strip()
     #
     # NOTE: psql output goes to spool files, not pipes. We write the whole
     # artifact to stdin before reading anything back, so a pipe would let psql
