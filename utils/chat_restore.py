@@ -547,12 +547,20 @@ class AttachmentRestorer:  # pylint: disable=R0902
         self.uploaded.append((self.bucket, name))
         return self.bucket, name
 
-    def prepare(self, dry_run):
-        """ Upload every file of the archive ahead of the transaction """
+    def prepare(self, dry_run, skip_conversations=()):
+        """ Upload the files of the archive ahead of the transaction
+
+        Files under a conversation in skip_conversations (uuids the target
+        already has, so the merge skips them) are left out; one a restored
+        message still points at is uploaded when it is linked.
+        """
         self.prepared = {}
         if not self.with_files:
             return
+        skip = {str(uuid) for uuid in skip_conversations}
         for key in self.files:
+            if key[1].split("/", 1)[0] in skip:
+                continue
             item = {"bucket": key[0], "name": key[1]}
             try:
                 # A preview only checks the archive has the file
@@ -586,8 +594,8 @@ class AttachmentRestorer:  # pylint: disable=R0902
             try:
                 if self.with_files:
                     if key not in uploads:
-                        if self.prepared is not None:
-                            uploads[key] = self.prepared.get(key)
+                        if self.prepared is not None and key in self.prepared:
+                            uploads[key] = self.prepared[key]
                         # A preview only checks the archive has the file
                         elif dry_run:
                             uploads[key] = key if key in self.files else None

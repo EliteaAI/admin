@@ -270,12 +270,27 @@ def _quote(identifier):
     return '"{}"'.format(str(identifier).replace('"', '""'))
 
 
+# information_schema.columns.data_type, read from pg_catalog: arrays are
+# ARRAY, types outside pg_catalog USER-DEFINED and a domain its base type
+DATA_TYPE_SQL = (
+    "case when bt.typcategory = 'A' then 'ARRAY'"
+    " when btn.nspname <> 'pg_catalog' then 'USER-DEFINED'"
+    " else format_type(bt.oid, null) end"
+)
+DATA_TYPE_JOINS = (
+    " join pg_type t on t.oid = a.atttypid"
+    " join pg_type bt on bt.oid = case when t.typtype = 'd' then t.typbasetype else t.oid end"
+    " join pg_namespace btn on btn.oid = bt.typnamespace"
+)
+
+
 def list_tables(cursor, schema):
     """ Base tables of a schema """
     cursor.execute(
-        "select table_name from information_schema.tables"
-        " where table_schema = %s and table_type = 'BASE TABLE'"
-        " order by table_name",
+        "select c.relname from pg_class c"
+        " join pg_namespace n on n.oid = c.relnamespace"
+        " where n.nspname = %s and c.relkind in ('r', 'p')"
+        " order by c.relname",
         (schema,),
     )
     return [row[0] for row in cursor.fetchall()]
@@ -283,9 +298,12 @@ def list_tables(cursor, schema):
 
 def _list_columns(cursor, schema, table):
     cursor.execute(
-        "select column_name, data_type from information_schema.columns"
-        " where table_schema = %s and table_name = %s"
-        " order by ordinal_position",
+        "select a.attname, " + DATA_TYPE_SQL +
+        " from pg_attribute a"
+        " join pg_class c on c.oid = a.attrelid"
+        " join pg_namespace n on n.oid = c.relnamespace" + DATA_TYPE_JOINS +
+        " where n.nspname = %s and c.relname = %s and a.attnum > 0 and not a.attisdropped"
+        " order by a.attnum",
         (schema, table),
     )
     return [(row[0], row[1]) for row in cursor.fetchall()]
@@ -293,9 +311,12 @@ def _list_columns(cursor, schema, table):
 
 def _list_sequence_columns(cursor, schema, table):
     cursor.execute(
-        "select column_name from information_schema.columns"
-        " where table_schema = %s and table_name = %s"
-        " and (is_identity = 'YES' or column_default like 'nextval(%%')",
+        "select a.attname from pg_attribute a"
+        " join pg_class c on c.oid = a.attrelid"
+        " join pg_namespace n on n.oid = c.relnamespace"
+        " left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum"
+        " where n.nspname = %s and c.relname = %s and a.attnum > 0 and not a.attisdropped"
+        " and (a.attidentity <> '' or pg_get_expr(d.adbin, d.adrelid) like 'nextval(%%')",
         (schema, table),
     )
     return [row[0] for row in cursor.fetchall()]
