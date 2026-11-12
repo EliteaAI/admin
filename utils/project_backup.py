@@ -111,7 +111,7 @@ JSON_DATA_TYPES = ("json", "jsonb")
 TEXT_DATA_TYPES = ("text", "character varying", "character", "citext")
 
 DEFAULT_CHUNK_SIZE = 500
-ROWS_PER_STATEMENT = 100
+ROWS_PER_STATEMENT = 1000
 
 
 def is_sensitive_name(name):
