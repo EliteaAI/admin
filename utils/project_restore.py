@@ -19,12 +19,13 @@
 
 import re
 import json
+import time
 
 import psycopg2  # pylint: disable=E0401
 
 from pylon.core.tools import log  # pylint: disable=E0611,E0401
 
-from .project_backup import SAFE_MODE_EXCLUDED_TABLES
+from .project_backup import SAFE_MODE_EXCLUDED_TABLES, DATA_TYPE_SQL, DATA_TYPE_JOINS
 from .chat_backup import CHAT_BACKUP_TABLES, CHATS_NONE, CHATS_WITH_ATTACHMENTS, CHAT_OPTIONS
 from . import chat_restore
 from .skill_files_backup import SKILL_FILES_TABLE, SKILL_FILE_WRITE_LOCK
@@ -804,23 +805,43 @@ def _dbapi_connection(raw_connection):
     return raw_connection
 
 
+# pg_catalog rather than information_schema: its views are slow on a database
+# holding many project schemas
+SCHEMA_TABLES_SQL = (
+    "select c.relname from pg_class c"
+    " join pg_namespace n on n.oid = c.relnamespace"
+    " where n.nspname = %s and c.relkind in ('r', 'p')"
+)
+
+SCHEMA_COLUMNS_SQL = (
+    "select c.relname, a.attname from pg_attribute a"
+    " join pg_class c on c.oid = a.attrelid"
+    " join pg_namespace n on n.oid = c.relnamespace"
+    " where n.nspname = %s and c.relkind in ('r', 'p', 'v', 'm', 'f')"
+    " and a.attnum > 0 and not a.attisdropped"
+)
+
+REQUIRED_COLUMNS_SQL = (
+    "select c.relname, a.attname, " + DATA_TYPE_SQL +
+    " from pg_attribute a"
+    " join pg_class c on c.oid = a.attrelid"
+    " join pg_namespace n on n.oid = c.relnamespace" + DATA_TYPE_JOINS +
+    " left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum"
+    " where n.nspname = %s and c.relkind in ('r', 'p', 'f')"
+    " and a.attnum > 0 and not a.attisdropped and a.attnotnull"
+    " and d.oid is null and a.attidentity = '' and a.attgenerated = ''"
+)
+
+
 def list_schema_tables(cursor, schema):
     """ Base tables present in a schema """
-    cursor.execute(
-        "select table_name from information_schema.tables"
-        " where table_schema = %s and table_type = 'BASE TABLE'",
-        (schema,),
-    )
+    cursor.execute(SCHEMA_TABLES_SQL, (schema,))
     return {row[0] for row in cursor.fetchall()}
 
 
 def schema_columns(cursor, schema):
     """ table -> set of its column names """
-    cursor.execute(
-        "select table_name, column_name from information_schema.columns"
-        " where table_schema = %s",
-        (schema,),
-    )
+    cursor.execute(SCHEMA_COLUMNS_SQL, (schema,))
     #
     columns = {}
     for table, column in cursor.fetchall():
@@ -835,12 +856,7 @@ def required_columns(cursor, schema):
     migration that added such a column carries no value for it, and leaving it
     out fails the INSERT.
     """
-    cursor.execute(
-        "select table_name, column_name, data_type from information_schema.columns"
-        " where table_schema = %s and is_nullable = 'NO' and column_default is null"
-        " and is_identity = 'NO' and is_generated = 'NEVER'",
-        (schema,),
-    )
+    cursor.execute(REQUIRED_COLUMNS_SQL, (schema,))
     #
     columns = {}
     for table, column, data_type in cursor.fetchall():
@@ -1131,6 +1147,25 @@ def _record_filled(summary, schema, table, columns):
             recorded.append(column)
 
 
+class _StepTimer:
+    """ Seconds each restore step took, logged once the restore ends """
+
+    def __init__(self):
+        self.started = self.last = time.monotonic()
+        self.steps = {}
+
+    def mark(self, step):
+        now = time.monotonic()
+        self.steps[step] = round(self.steps.get(step, 0) + now - self.last, 3)
+        self.last = now
+
+    def log(self, schema, outcome):
+        log.info(
+            "project_restore_timing: %s %s in %.3fs %s",
+            schema, outcome, time.monotonic() - self.started, self.steps,
+        )
+
+
 def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
         raw_connection, open_chunks, schema,
         tables=None, include_parents=False, truncate=False, dry_run=False,
@@ -1158,6 +1193,7 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
 
     lock_timeout bounds how long the restore waits for the project tables.
     """
+    timer = _StepTimer()
     dbapi_connection = _dbapi_connection(raw_connection)
     requested = {table.strip() for table in (tables or ()) if table.strip()}
     denied = frozenset(denied_tables)
@@ -1197,6 +1233,7 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
             requested = requested.difference(denied)
     # The catalog reads opened a transaction; the one writing starts later
     dbapi_connection.rollback()
+    timer.mark("catalog")
     #
     unknown = sorted(requested.difference(existing))
     if unknown:
@@ -1251,8 +1288,14 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
     deferred_setvals = []
     #
     # Files go to storage before the transaction, not while the tables are locked
+    if truncate_targets:
+        timer.mark("scan")
     if with_chats and hasattr(attachment_handler, "prepare"):
-        attachment_handler.prepare(dry_run)
+        # A replace truncates the chats first: none of them is skipped then
+        skip = () if "chat_conversations" in truncate_targets \
+            else existing_conversations(dbapi_connection, schema, existing)
+        attachment_handler.prepare(dry_run, skip)
+        timer.mark("attachment_upload")
     #
     cursor = dbapi_connection.cursor()
     #
@@ -1367,19 +1410,23 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
             if kind == STATEMENT_INSERT and cursor.rowcount and cursor.rowcount > 0:
                 summary["rows"][table] = summary["rows"].get(table, 0) + cursor.rowcount
                 summary["total_rows"] += cursor.rowcount
+        timer.mark("statements")
         #
         try:
             _flush_staged(
                 cursor, staged, children, columns_by_table, summary, child_references,
             )
+            timer.mark("merge")
             if with_chats:
                 context = dict(chat_context or {}, member_user_ids=member_user_ids)
                 summary["chats"], attachments = chat_restore.merge_chats(
                     cursor, staged, columns_by_table, existing, context,
                 )
                 summary["chats"]["included"] = restore_chats
+                timer.mark("chat_merge")
                 if attachment_handler is not None:
                     summary["attachments"] = attachment_handler(cursor, attachments, dry_run)
+                    timer.mark("attachment_link")
             if skill_file_handler is not None and SKILL_FILES_TABLE in seen_tables:
                 summary["skill_files"] = skill_file_handler(cursor, dry_run)
             for table, statement in deferred_setvals:
@@ -1404,6 +1451,7 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
                 member_user_ids,
             )
         #
+        timer.mark("remap")
         summary["applied_tables"] = sorted(seen_tables)
         summary["skipped_tables"] = sorted(skipped_tables)
         summary["replaced_tables"] = sorted(replaced_tables)
@@ -1416,7 +1464,10 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
             dbapi_connection.commit()
             if hasattr(attachment_handler, "release_unused"):
                 attachment_handler.release_unused()
+        timer.mark("commit")
+        timer.log(schema, "dry run" if dry_run else "applied")
     except Exception as exc:
+        timer.log(schema, "failed")
         dbapi_connection.rollback()
         # Files uploaded for messages that were never committed
         if hasattr(attachment_handler, "cleanup"):
@@ -1428,6 +1479,17 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
         cursor.close()
     #
     return summary
+
+
+def existing_conversations(dbapi_connection, schema, existing):
+    """ uuids of the conversations the target has: the chat merge skips them """
+    if "chat_conversations" not in existing:
+        return set()
+    with dbapi_connection.cursor() as cursor:
+        cursor.execute("select uuid::text from {}.chat_conversations".format(_quote(schema)))
+        uuids = {row[0] for row in cursor.fetchall()}
+    dbapi_connection.rollback()
+    return uuids
 
 
 def _is_lock_timeout(error):

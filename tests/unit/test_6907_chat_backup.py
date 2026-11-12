@@ -377,3 +377,27 @@ def test_restorer_without_files_only_links_existing_ones():
         "failed_names": ["cat.png", "not-in-archive.txt"],
     }
     assert storage.files == {("attachments", "c1/report.pdf"): b"x"}
+
+
+def test_prepare_skips_files_of_conversations_the_target_has():
+    storage = FakeStorage()
+    restorer = _restorer(storage)
+    restorer.prepare(dry_run=False, skip_conversations={"c1"})
+    assert storage.files == {}
+    assert restorer.uploaded == []
+
+
+def test_prepare_skip_still_uploads_a_file_a_restored_message_needs():
+    storage = FakeStorage()
+    restorer = _restorer(storage)
+    restorer.prepare(dry_run=False, skip_conversations={"c1"})
+    summary = restorer(RecordingCursor(), _items()[1:2], dry_run=False)
+    assert summary["uploaded"] == 1
+    assert storage.files[("attachments", "c1/cat.png")] == FILES[("attachments", "c1/cat.png")]
+
+
+def test_prepare_without_skip_uploads_every_archived_file():
+    storage = FakeStorage()
+    restorer = _restorer(storage)
+    restorer.prepare(dry_run=False)
+    assert sorted(name for _, name in storage.files) == ["c1/cat.png", "c1/report.pdf"]

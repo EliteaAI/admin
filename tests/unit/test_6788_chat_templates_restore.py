@@ -81,11 +81,11 @@ class FakeCursor:
         lowered = sql.lower()
         self.rowcount = 1 if lowered.startswith("insert") else 0
         #
-        if "from information_schema.tables" in lowered:
+        if "from information_schema.tables" in lowered or "c.relkind in ('r', 'p')" in lowered:
             self._result = [(table,) for table in self.connection.tables]
-        elif "from information_schema.columns" in lowered and "is_nullable" in lowered:
+        elif "attnotnull" in lowered or ("from information_schema.columns" in lowered and "is_nullable" in lowered):
             self._result = []
-        elif "from information_schema.columns" in lowered:
+        elif "from information_schema.columns" in lowered or "from pg_attribute" in lowered:
             self._result = [
                 (table, column)
                 for table, columns in self.connection.tables.items()
