@@ -1136,7 +1136,7 @@ def _stage_insert(cursor, statement, table, staged):
 
 def load_copy(  # pylint: disable=R0913,R0914
         cursor, table, names, rows, destination, types,
-        missing=(), replacements=None, required=None,
+        missing=(), replacements=None, required=None, references=(),
 ):
     """ Load the data of a COPY block into `destination`, return
         (rows inserted, dropped non-NULL values, filled columns)
@@ -1146,6 +1146,10 @@ def load_copy(  # pylint: disable=R0913,R0914
     so no value is ever read as SQL, and the schema drift rewrite_insert
     handles for an INSERT is a select list here: columns the target lacks are
     left out, owner columns repointed, required columns filled where NULL.
+    references, the (column, parent, parent column) foreign keys of the table,
+    drop the rows pointing at a parent row the target does not have - one the
+    backup did not carry, or skipped as already present - instead of failing
+    the restore on it. Returns the dropped rows too.
     """
     replacements = replacements or {}
     required = required or {}
@@ -1196,6 +1200,23 @@ def load_copy(  # pylint: disable=R0913,R0914
             expressions.append("s.{}::{}".format(_quote(name), types[name]))
     expressions.extend(literal for _, literal in added)
     #
+    orphans = 0
+    for column, parent, parent_column in references:
+        if column not in kept or column in replacements:
+            continue
+        cursor.execute(
+            "DELETE FROM {} s WHERE s.{column} IS NOT NULL AND NOT EXISTS"
+            " (SELECT 1 FROM {} p WHERE p.{} = s.{column}::{})".format(
+                loader, _quote(parent), _quote(parent_column), types[column], column=_quote(column),
+            )
+        )
+        orphans += max(cursor.rowcount, 0)
+    if orphans:
+        log.warning(
+            "project_restore: %s rows of %s reference rows the target does not have;"
+            " skipping them", orphans, table,
+        )
+    #
     cursor.execute(
         "INSERT INTO {} ({}) SELECT {} FROM {} s ON CONFLICT DO NOTHING".format(
             destination, ", ".join(_quote(name) for name in kept + [name for name, _ in added]),
@@ -1205,7 +1226,7 @@ def load_copy(  # pylint: disable=R0913,R0914
     inserted = max(cursor.rowcount, 0)
     cursor.execute("DROP TABLE {}".format(loader))
     #
-    return inserted, dropped_values, filled
+    return inserted, dropped_values, filled, orphans
 
 
 def _merge_by_key(cursor, table, key, source, columns):
@@ -1636,12 +1657,15 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
                     if table in staged_candidates else _quote(table)
                 missing = [name for name in names if name not in known_columns]
                 try:
-                    inserted, dropped_values, filled = load_copy(
+                    inserted, dropped_values, filled, orphans = load_copy(
                         cursor, table, names, rows, destination, types_by_table.get(table, {}),
                         missing=missing,
                         replacements={} if table in CHAT_BACKUP_TABLES else
                         owner_replacements(table, owner_user_id, owner_project_id),
                         required=required_by_table.get(table, {}),
+                        # Staged rows are checked once their parents are merged
+                        references=() if table in staged_candidates
+                        else foreign_key_references(cursor, schema, table),
                     )
                 except psycopg2.Error as exc:
                     raise ValueError(
@@ -1649,6 +1673,8 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
                             table, str(getattr(exc, "pgerror", None) or exc).strip(),
                         )
                     ) from exc
+                if orphans:
+                    summary["orphan_rows"][table] = summary["orphan_rows"].get(table, 0) + orphans
                 if missing:
                     _record_dropped(summary, schema, table, missing, dropped_values)
                 if filled:
