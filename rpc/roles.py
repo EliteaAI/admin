@@ -28,17 +28,20 @@ def _owner_only_admin(module, project_id, user_id, role_names):
     if "admin" not in role_names:
         return role_names
     #
+    rpc = module.context.rpc_manager.timeout(5)
+    # Let a failed kind lookup raise: stripping admin there would silently demote team project admins
+    kind = rpc.projects_get_project_kind(project_id)
+    if kind != "personal":
+        return role_names
+    #
     try:
-        rpc = module.context.rpc_manager.timeout(5)
-        if rpc.projects_get_project_kind(project_id) != "personal":
-            return role_names
         # Not required to be a member yet: creating a private project adds its owner through this call
         owner_id = rpc.projects_get_private_project_owner(project_id, require_member=False)
     except Exception:  # pylint: disable=W0703
         log.exception("Cannot verify the owner of project %s; admin not granted to user %s", project_id, user_id)
         owner_id = None
     #
-    if owner_id is not None and owner_id == user_id:
+    if owner_id is not None and int(owner_id) == int(user_id):
         return role_names
     #
     log.warning("Admin not granted in private project %s to non-owner user %s", project_id, user_id)
