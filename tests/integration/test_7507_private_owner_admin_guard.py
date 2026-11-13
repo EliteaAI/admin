@@ -45,7 +45,8 @@ class FakeRpcCall:
     def projects_get_project_kind(self, project_id):
         return "personal" if project_id == PRIVATE else "team"
 
-    def projects_get_private_project_owner(self, project_id):
+    def projects_get_private_project_owner(self, project_id, require_member=True):
+        assert require_member is False, "the owner is not a member yet while a private project is created"
         if self.owner_lookup_fails:
             raise RuntimeError("projects unavailable")
         return OWNER if project_id == PRIVATE else None

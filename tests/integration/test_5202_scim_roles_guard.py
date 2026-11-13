@@ -58,7 +58,8 @@ def rpc(monkeypatch):
     tools.auth = fake_auth
     pylon_tools = types.ModuleType("pylon.core.tools")
     pylon_tools.web = types.SimpleNamespace(rpc=lambda *a, **k: (lambda f: f))
-    pylon_tools.log = types.SimpleNamespace(info=lambda *a, **k: None)
+    pylon_tools.log = types.SimpleNamespace(
+        info=lambda *a, **k: None, warning=lambda *a, **k: None, exception=lambda *a, **k: None)
     flask = types.ModuleType("flask")
     flask.g = types.SimpleNamespace()
     for name, module in (("tools", tools), ("pylon", types.ModuleType("pylon")),
@@ -86,8 +87,11 @@ def rpc(monkeypatch):
         setattr(instance, name, types.MethodType(getattr(module.RPC, name), instance))
     instance.scim = types.SimpleNamespace(guards=FakeGuards())
     events = []
+    # #7507: the membership RPCs ask the projects plugin for the project kind; these are team projects
+    projects_rpc = types.SimpleNamespace(projects_get_project_kind=lambda _pid: "team")
     instance.context = types.SimpleNamespace(
-        event_manager=types.SimpleNamespace(fire_event=lambda *a: events.append(a)))
+        event_manager=types.SimpleNamespace(fire_event=lambda *a: events.append(a)),
+        rpc_manager=types.SimpleNamespace(call=projects_rpc, timeout=lambda _t: projects_rpc))
     return instance, fake_auth
 
 
