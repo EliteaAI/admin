@@ -17,6 +17,8 @@
 
 """ API """
 
+import datetime
+
 import flask  # pylint: disable=E0401,W0611
 
 from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
@@ -56,8 +58,9 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         provisioned = scim.service.provisioned_user_ids([u["id"] for u in result["rows"]]) \
             if scim is not None else set()
         for user in result["rows"]:
-            if user["last_login"]:
-                user["last_login"] = user["last_login"].isoformat(timespec="seconds")
+            for key, value in user.items():
+                if isinstance(value, datetime.datetime):
+                    user[key] = value.isoformat(timespec="seconds")
             user["scim_provisioned"] = user["id"] in provisioned
         #
         return result

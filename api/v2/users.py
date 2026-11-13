@@ -16,6 +16,7 @@
 #   limitations under the License.
 
 """ API """
+import datetime
 import json
 
 from flask import request
@@ -132,8 +133,9 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
         for user in result:
             user['roles'] = project_users.get(user['id'], [])
             user['scim_synced'] = user['id'] in synced
-            if user['last_login']:
-                user['last_login'] = user['last_login'].isoformat(timespec='seconds')
+            for key, value in user.items():
+                if isinstance(value, datetime.datetime):
+                    user[key] = value.isoformat(timespec='seconds')
             user['avatar'] = avatar_map.get(user['id'])
 
         return {
