@@ -23,6 +23,28 @@ def _refuse_removing_synced(module, project_id, user_ids, roles=None):
         raise ScimManagedError()
 
 
+def _owner_only_admin(module, project_id, user_id, role_names):
+    """ In a private project only its verified owner may hold admin (#7507); anyone else gets the rest """
+    if "admin" not in role_names:
+        return role_names
+    #
+    try:
+        rpc = module.context.rpc_manager.timeout(5)
+        if rpc.projects_get_project_kind(project_id) != "personal":
+            return role_names
+        # Not required to be a member yet: creating a private project adds its owner through this call
+        owner_id = rpc.projects_get_private_project_owner(project_id, require_member=False)
+    except Exception:  # pylint: disable=W0703
+        log.exception("Cannot verify the owner of project %s; admin not granted to user %s", project_id, user_id)
+        owner_id = None
+    #
+    if owner_id is not None and owner_id == user_id:
+        return role_names
+    #
+    log.warning("Admin not granted in private project %s to non-owner user %s", project_id, user_id)
+    return [name for name in role_names if name != "admin"]
+
+
 class RPC:
 
     #
@@ -106,6 +128,7 @@ class RPC:
     @web.rpc("admin_add_user_to_project", "add_user_to_project")
     def add_user_to_project(self, project_id: int, user_id: int, role_names: list[str],
                             **kwargs) -> bool:
+        role_names = _owner_only_admin(self, project_id, user_id, role_names)
         user_roles = auth.list_project_user_roles(project_id, user_id)
         existing_role_ids = {r['role_id'] for r in user_roles}
         for role_name in role_names:
@@ -168,12 +191,13 @@ class RPC:
         _refuse_removing_synced(self, project_id, user_ids, roles=list(new_roles))
         roles_data = auth.list_project_roles(project_id)
         role_name_map = {r['name']: r['id'] for r in roles_data}
-        target_role_ids = []
-        for name in new_roles:
-            if name in role_name_map:
-                target_role_ids.append(role_name_map[name])
 
         for user_id in user_ids:
+            user_roles = _owner_only_admin(self, project_id, user_id, list(new_roles))
+            # Dropping admin must not turn a role change into a removal from the project
+            if new_roles and not user_roles:
+                continue
+            target_role_ids = [role_name_map[name] for name in user_roles if name in role_name_map]
             auth.update_project_user_roles(project_id, user_id, target_role_ids)
         return True
 
