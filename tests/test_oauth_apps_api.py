@@ -82,3 +82,18 @@ def test_delete(adapter):
     assert api.delete('a') == ('', 204)
     owner.oauth_apps_admin_delete.side_effect = LookupError('OAuth app not found')
     assert api.delete('b')[1] == 404
+
+
+def test_providers_are_forwarded_from_the_owner():
+    """#7327: the provider catalog comes from the Configurations plugin as is."""
+    path = Path(__file__).resolve().parents[1] / 'api/v2/oauth_app_providers.py'
+    tree = ast.parse(path.read_text())
+    body = [n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'AdminAPI']
+    for method in body[0].body:
+        if isinstance(method, ast.FunctionDef):
+            method.decorator_list = []
+    catalog = [{'id': 'microsoft_entra', 'credential_types': [{'type': 'teams', 'options': []}]}]
+    namespace = {'api_tools': NS(APIModeHandler=object),
+                 '_call': lambda name: (catalog, None) if name == 'oauth_apps_admin_providers' else (None, None)}
+    exec(compile(ast.Module(body, []), str(path), 'exec'), namespace)
+    assert namespace['AdminAPI']().get() == ({'total': 1, 'rows': catalog}, 200)
