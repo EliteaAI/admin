@@ -25,7 +25,7 @@ import flask  # pylint: disable=E0401
 
 from tools import auth, api_tools, register_openapi  # pylint: disable=E0401
 
-from .eval_platform_dimensions import _VIEW_ROLES, _WRITE_ROLES
+from .eval_auto import _AUTO_VIEW_ROLES, _AUTO_WRITE_ROLES, _rpc_result
 
 # The resync walks every project, like Run now.
 _RESYNC_TIMEOUT = 300
@@ -44,10 +44,11 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     )
     @auth.decorators.check_api({
         "permissions": ["configuration.evaluation.auto.view"],
-        "recommended_roles": _VIEW_ROLES,
+        "recommended_roles": _AUTO_VIEW_ROLES,
     })
     def get(self):
-        return self._rpc.elitea_core_eval_auto_get_platform_dataset(), 200
+        result, error = _rpc_result(self._rpc.elitea_core_eval_auto_get_platform_dataset)
+        return error or (result, 200)
 
     @register_openapi(
         name="Update Scheduled Evaluation Default Dataset",
@@ -57,13 +58,15 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     )
     @auth.decorators.check_api({
         "permissions": ["configuration.evaluation.auto.edit"],
-        "recommended_roles": _WRITE_ROLES,
+        "recommended_roles": _AUTO_WRITE_ROLES,
     })
     def put(self):
         body = flask.request.get_json(silent=True)
         if not isinstance(body, dict) or not isinstance(body.get("probes"), list):
             return {"ok": False, "error": "body must be a JSON object with a probes list"}, 400
-        result = self._rpc.elitea_core_eval_auto_set_platform_probes(body["probes"])
+        result, error = _rpc_result(self._rpc.elitea_core_eval_auto_set_platform_probes, body["probes"])
+        if error:
+            return error
         return result, 200 if result.get("ok") else 400
 
     @register_openapi(
@@ -72,10 +75,14 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     )
     @auth.decorators.check_api({
         "permissions": ["configuration.evaluation.auto.edit"],
-        "recommended_roles": _WRITE_ROLES,
+        "recommended_roles": _AUTO_WRITE_ROLES,
     })
     def post(self):
-        result = self.module.context.rpc_manager.timeout(_RESYNC_TIMEOUT).elitea_core_eval_auto_resync_platform_dataset()
+        result, error = _rpc_result(
+            self.module.context.rpc_manager.timeout(_RESYNC_TIMEOUT).elitea_core_eval_auto_resync_platform_dataset,
+        )
+        if error:
+            return error
         # Refused when the registry has no active probes, which would empty every copy.
         return result, 200 if result.get("ok") else 409
 

@@ -24,7 +24,7 @@ import flask  # pylint: disable=E0401
 
 from tools import auth, api_tools, register_openapi  # pylint: disable=E0401
 
-from .eval_platform_dimensions import _VIEW_ROLES
+from .eval_auto import _AUTO_VIEW_ROLES
 
 STATUSES = ("passed", "warning", "failed", "not_evaluated")
 REASONS = ("HITL_REQUIRED", "OAUTH_REQUIRED", "AGENT_BROKEN", "TIMEOUT", "OWNER_UNAVAILABLE",
@@ -108,7 +108,7 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     )
     @auth.decorators.check_api({
         "permissions": ["configuration.evaluation.auto.view"],
-        "recommended_roles": _VIEW_ROLES,
+        "recommended_roles": _AUTO_VIEW_ROLES,
     })
     def get(self, project_id: int = None, application_id: int = None):
         if project_id is not None and application_id is not None:

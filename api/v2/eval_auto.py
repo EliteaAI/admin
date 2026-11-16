@@ -23,13 +23,34 @@ shell over its RPCs. Settings are merged and clamped there, so a partial body is
 
 import flask  # pylint: disable=E0401
 
+from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
 from tools import auth, api_tools, register_openapi  # pylint: disable=E0401
-
-from .eval_platform_dimensions import _VIEW_ROLES, _WRITE_ROLES
 
 # Run now enumerates every project before it returns; the tick allows itself 120 s for the
 # project list alone.
 _RUN_NOW_TIMEOUT = 300
+
+# Administration mode only, and no editor or viewer: see the permission registration in module.py.
+_AUTO_VIEW_ROLES = {
+    "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+}
+_AUTO_WRITE_ROLES = _AUTO_VIEW_ROLES
+
+
+def _rpc_result(func, *args, **kwargs):
+    """ The RPC's result and no error, or no result and the (body, status) to return instead """
+    try:
+        result = func(*args, **kwargs)
+    except Exception as error:  # pylint: disable=W0703
+        # The RPC layer signals a timeout with its own exception types (e.g. queue.Empty).
+        timed_out = any(word in type(error).__name__ for word in ("Timeout", "Empty"))
+        log.warning("Scheduled evaluation RPC failed: %s", type(error).__name__)
+        if timed_out:
+            return None, ({"ok": False, "reason": "timeout"}, 504)
+        return None, ({"ok": False, "reason": "rpc_error"}, 502)
+    if result is None:
+        return None, ({"ok": False, "reason": "no_result"}, 502)
+    return result, None
 
 
 def _user_id():
@@ -52,10 +73,11 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     )
     @auth.decorators.check_api({
         "permissions": ["configuration.evaluation.auto.view"],
-        "recommended_roles": _VIEW_ROLES,
+        "recommended_roles": _AUTO_VIEW_ROLES,
     })
     def get(self):
-        return self._rpc.elitea_core_eval_auto_get_config(), 200
+        result, error = _rpc_result(self._rpc.elitea_core_eval_auto_get_config)
+        return error or (result, 200)
 
     @register_openapi(
         name="Update Scheduled Evaluation Settings",
@@ -66,13 +88,15 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     )
     @auth.decorators.check_api({
         "permissions": ["configuration.evaluation.auto.edit"],
-        "recommended_roles": _WRITE_ROLES,
+        "recommended_roles": _AUTO_WRITE_ROLES,
     })
     def put(self):
         settings = flask.request.get_json(silent=True)
         if not isinstance(settings, dict):
             return {"ok": False, "error": "body must be a JSON object"}, 400
-        result = self._rpc.elitea_core_eval_auto_set_config(settings, user_id=_user_id())
+        result, error = _rpc_result(self._rpc.elitea_core_eval_auto_set_config, settings, user_id=_user_id())
+        if error:
+            return error
         if not result.get("ok"):
             return result, 400
         return result["settings"], 200
@@ -80,18 +104,26 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
     @register_openapi(
         name="Run Scheduled Evaluation Now",
         description=(
-            "Start a job now, even with the schedule off or outside the launch window. Returns the job id, "
-            "or why none started (e.g. a job is already running)."
+            "Start a job now, even with the schedule off. Its agents launch at once, even outside the "
+            "launch window. Returns the job id, or why none started (e.g. a job is already running). "
+            "A 504 carries job_may_have_started: listing the agents can outlast the request."
         ),
     )
     @auth.decorators.check_api({
         "permissions": ["configuration.evaluation.auto.run"],
-        "recommended_roles": _WRITE_ROLES,
+        "recommended_roles": _AUTO_WRITE_ROLES,
     })
     def post(self):
-        result = self.module.context.rpc_manager.timeout(_RUN_NOW_TIMEOUT).elitea_core_eval_auto_run_now(
+        result, error = _rpc_result(
+            self.module.context.rpc_manager.timeout(_RUN_NOW_TIMEOUT).elitea_core_eval_auto_run_now,
             user_id=_user_id(),
         )
+        if error:
+            body, status = error
+            if status == 504:
+                # Core keeps going after the request gives up, so the job may be committed and running.
+                body = {**body, "job_may_have_started": True}
+            return body, status
         return result, 200 if result.get("started") else 409
 
 

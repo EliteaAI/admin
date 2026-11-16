@@ -12,8 +12,7 @@ pytestmark = pytest.mark.unit
 API_DIR = Path(__file__).resolve().parents[1] / 'api/v2'
 
 
-def _load(filename, request):
-    path = API_DIR / filename
+def _module_body(path):
     tree = ast.parse(path.read_text())
     body = []
     for node in tree.body:
@@ -26,9 +25,15 @@ def _load(filename, request):
                 # Keep @property (the _rpc accessor); drop the auth/openapi wrappers.
                 method.decorator_list = [d for d in method.decorator_list if getattr(d, 'id', None) == 'property']
         body.append(node)
+    return compile(ast.Module(body, []), str(path), 'exec')
+
+
+def _load(filename, request):
     flask = NS(request=request, g=NS(auth=NS(id=7)))
-    namespace = {'flask': flask, 'api_tools': NS(APIModeHandler=object), '_VIEW_ROLES': {}, '_WRITE_ROLES': {}}
-    exec(compile(ast.Module(body, []), str(path), 'exec'), namespace)
+    namespace = {'flask': flask, 'api_tools': NS(APIModeHandler=object), 'log': Mock()}
+    # The sibling modules import the roles and the RPC guard from eval_auto.
+    exec(_module_body(API_DIR / 'eval_auto.py'), namespace)
+    exec(_module_body(API_DIR / filename), namespace)
     rpc = Mock()
     api = namespace['AdminAPI']()
     api.module = NS(context=NS(rpc_manager=NS(call=rpc, timeout=lambda seconds: rpc)))
@@ -93,6 +98,44 @@ def test_run_now_while_a_job_runs_is_a_conflict(settings_api):
     assert status == 409 and body['reason'] == 'job_running'
 
 
+class RpcTimeout(Exception):
+    pass
+
+
+@pytest.mark.parametrize('failure, status, reason', [
+    (RpcTimeout('slow'), 504, 'timeout'),
+    (RuntimeError('boom'), 502, 'rpc_error'),
+])
+def test_run_now_reports_a_failed_rpc(settings_api, failure, status, reason):
+    api, rpc, _ = settings_api
+    rpc.elitea_core_eval_auto_run_now.side_effect = failure
+    body, code = api.post()
+    assert code == status and body['reason'] == reason
+    # Only a timeout leaves the job's fate unknown.
+    assert body.get('job_may_have_started', False) is (status == 504)
+
+
+def test_run_now_without_a_result_is_a_bad_gateway(settings_api):
+    api, rpc, _ = settings_api
+    rpc.elitea_core_eval_auto_run_now.return_value = None
+    assert api.post() == ({'ok': False, 'reason': 'no_result'}, 502)
+
+
+def test_get_and_put_report_a_failed_rpc(settings_api):
+    api, rpc, request = settings_api
+    rpc.elitea_core_eval_auto_get_config.side_effect = RpcTimeout()
+    assert api.get() == ({'ok': False, 'reason': 'timeout'}, 504)
+    request.get_json.return_value = {'max_concurrent_runs': 3}
+    rpc.elitea_core_eval_auto_set_config.return_value = None
+    assert api.put() == ({'ok': False, 'reason': 'no_result'}, 502)
+
+
+def test_the_error_body_does_not_leak_the_exception_text(settings_api):
+    api, rpc, _ = settings_api
+    rpc.elitea_core_eval_auto_get_config.side_effect = RuntimeError('postgresql://user:secret@db')
+    assert 'secret' not in str(api.get())
+
+
 def test_list_defaults(items_api):
     api, rpc, _ = items_api
     rpc.elitea_core_eval_auto_list.return_value = {'total': 0, 'items': [], 'job': None}
@@ -137,10 +180,46 @@ def test_history_rejects_a_bad_limit(items_api, limit):
     rpc.elitea_core_eval_auto_history.assert_not_called()
 
 
-def test_permissions_are_registered():
-    source = (Path(__file__).resolve().parents[1] / 'module.py').read_text()
-    for action in ('view', 'edit', 'run'):
-        assert f'"configuration.evaluation.auto.{action}"' in source
+def _auto_registration():
+    """The recommended roles module.py registers the scheduled evaluation permissions with."""
+    tree = ast.parse((Path(__file__).resolve().parents[1] / 'module.py').read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and getattr(node.func, 'attr', None) == 'register_permissions':
+            try:
+                spec = ast.literal_eval(node.args[0])
+            except ValueError:
+                continue
+            if any(name.startswith('configuration.evaluation.auto.') for name in spec['permissions']):
+                return spec
+    return None
+
+
+def test_permissions_are_admin_only():
+    spec = _auto_registration()
+    assert sorted(spec['permissions']) == [f'configuration.evaluation.auto.{action}' for action in ('edit', 'run', 'view')]
+    # No project-mode grant, and neither editors nor viewers get platform-wide spend or cross-tenant data.
+    assert spec['recommended_roles'] == {
+        'administration': {'super_admin': True, 'admin': True, 'viewer': False, 'editor': False},
+    }
+
+
+def test_endpoints_check_the_same_roles(settings_api):
+    _, _, request = settings_api
+    _, _, namespace = _load('eval_auto.py', request)
+    assert namespace['_AUTO_VIEW_ROLES'] == namespace['_AUTO_WRITE_ROLES'] == _auto_registration()['recommended_roles']
+
+
+def test_dataset_resync_reports_a_timeout(dataset_api):
+    api, rpc, _ = dataset_api
+    rpc.elitea_core_eval_auto_resync_platform_dataset.side_effect = RpcTimeout()
+    assert api.post() == ({'ok': False, 'reason': 'timeout'}, 504)
+
+
+def test_dataset_put_without_a_result_is_a_bad_gateway(dataset_api):
+    api, rpc, request = dataset_api
+    request.get_json.return_value = {'probes': ['Hi']}
+    rpc.elitea_core_eval_auto_set_platform_probes.return_value = None
+    assert api.put()[1] == 502
 
 
 @pytest.fixture
