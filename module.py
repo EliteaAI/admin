@@ -186,6 +186,18 @@ class Module(module.ModuleModel):
                     "default": dict(_eval_roles),
                 }
             })
+        # Environment-wide scheduled evaluation. Admins only: a job spends every agent author's budget,
+        # the settings reach every tenant, and the results show agents across all projects.
+        auth.register_permissions({
+            "permissions": [
+                "configuration.evaluation.auto.view",
+                "configuration.evaluation.auto.edit",
+                "configuration.evaluation.auto.run",
+            ],
+            "recommended_roles": {
+                "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+            }
+        })
         auth.register_permissions({
             "permissions": ["configuration.users"],
             "recommended_roles": {
