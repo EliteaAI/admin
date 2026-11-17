@@ -21,7 +21,7 @@ import time
 
 from tools import context, log  # pylint: disable=E0401
 
-from .lifecycle_tasks import parse_param, _to_bool
+from .lifecycle_tasks import parse_param, _to_bool, _task_audit_ctx
 from .logs import make_logger
 
 
@@ -69,6 +69,7 @@ def delete_failed_projects(*args, **kwargs):
                 delete_project(
                     project_id=project["id"],
                     module=this.for_module("projects").module,
+                    audit_ctx=_task_audit_ctx(kwargs),
                 )
         except:  # pylint: disable=W0702
             log.exception("Got exception, stopping")
@@ -191,7 +192,7 @@ def delete_ghost_users(*args, **kwargs):  # pylint: disable=W0613,R0914
                     log.info("--> Deleting from project")
                     #
                     context.rpc_manager.call.admin_remove_users_from_project(
-                        user_in_id, [user_id], system_cleanup=True,
+                        user_in_id, [user_id], system_cleanup=True, audit_ctx=_task_audit_ctx(kwargs),
                     )
                     #
                     log.info("--> Deleted")
@@ -206,6 +207,7 @@ def delete_ghost_users(*args, **kwargs):  # pylint: disable=W0613,R0914
                 delete_project(
                     project_id=personal_project_id,
                     module=this.for_module("projects").module,
+                    audit_ctx=_task_audit_ctx(kwargs),
                 )
                 #
                 all_project_ids.remove(personal_project_id)
@@ -214,6 +216,6 @@ def delete_ghost_users(*args, **kwargs):  # pylint: disable=W0613,R0914
             #
             log.info("-> Deleting user")
             #
-            auth.delete_user(user_id)
+            auth.delete_user(user_id, audit_ctx=_task_audit_ctx(kwargs))
             #
             log.info("-> Deleted")

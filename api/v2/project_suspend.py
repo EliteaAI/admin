@@ -22,6 +22,8 @@ from pylon.core.tools import log  # pylint: disable=E0611,E0401,W0611
 
 from tools import auth, api_tools, db, register_openapi  # pylint: disable=E0401
 
+from ...utils import lifecycle_audit
+
 
 class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903,C0115
     @register_openapi(
@@ -53,6 +55,13 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903,C0115
             ).first()
             if not project:
                 return {"error": "Project not found"}, 404
+            if bool(project.suspended) != bool(suspended):
+                self.module.lifecycle_audit_record(session, lifecycle_audit.events.build(
+                    "project.suspended" if suspended else "project.unsuspended",
+                    self.module.lifecycle_audit_ctx(), "project",
+                    project={"id": project.id, "name": project.name},
+                    changes={"suspended": {"before": bool(project.suspended), "after": bool(suspended)}},
+                ))
             project.suspended = bool(suspended)
             session.commit()
             user_ids = self.module.context.rpc_manager.call.admin_get_users_ids_in_project(project_id)

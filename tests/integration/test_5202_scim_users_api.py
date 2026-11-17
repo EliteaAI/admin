@@ -66,11 +66,11 @@ def api(monkeypatch):
     monkeypatch.setitem(sys.modules, spec.name, module)
     spec.loader.exec_module(module)
 
-    def add_user_to_project_or_create(email, project_id, roles):
+    def add_user_to_project_or_create(email, project_id, roles, audit_ctx=None):  # pylint: disable=W0613
         calls.append((email, project_id, roles))
         return {"status": "ok", "id": 9, "email": email}
 
-    def update_roles_for_user(project_id, user_ids, roles):
+    def update_roles_for_user(project_id, user_ids, roles, audit_ctx=None):  # pylint: disable=W0613
         calls.append(("roles", project_id, list(user_ids), roles))
         return True
 
@@ -83,6 +83,7 @@ def api(monkeypatch):
                 update_roles_for_user=update_roles_for_user)),
             event_manager=types.SimpleNamespace(fire_event=lambda *a: None)),
         remove_users_from_project=lambda *a: calls.append(("remove",) + a),
+        lifecycle_audit_ctx=lambda: {"actor_type": "user", "actor_id": 1},  # #7504
     )
     return instance, request, calls
 

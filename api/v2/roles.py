@@ -119,7 +119,7 @@ class AdminAPI(api_tools.APIModeHandler):
         if (error := _unknown_mode(target_mode)):
             return error
         role_name = request.json["name"]
-        auth.delete_role(role_name, target_mode)
+        auth.delete_role(role_name, target_mode, audit_ctx=self.module.lifecycle_audit_ctx())
         return {"ok": True}
 
 
@@ -177,7 +177,7 @@ class ProjectAPI(api_tools.APIModeHandler):
     @auth.decorators.check_api(["configuration.roles.roles.delete"]) 
     def delete(self, project_id):
         role_name = request.json["name"]
-        result = self.module.delete_role(project_id, role_name)
+        result = self.module.delete_role(project_id, role_name, audit_ctx=self.module.lifecycle_audit_ctx())
         return {"ok": result}, 204
 
 

@@ -58,7 +58,9 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
                 logs.append(f"Skipping user {user_id} ({user_name})")
                 continue
             #
-            self.module.admin_update_roles_for_user(project_id, user_id, new_roles)
+            self.module.admin_update_roles_for_user(
+                project_id, user_id, new_roles, audit_ctx=self.module.lifecycle_audit_ctx(),
+            )
             logs.append(f"Added user {user_id} ({user_name}) to {project_id} as {new_roles}")
         #
         return {

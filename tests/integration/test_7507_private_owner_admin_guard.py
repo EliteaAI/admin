@@ -25,10 +25,10 @@ class FakeAuth:
     def get_project_role(self, project_id, name):
         return {"id": self.role_ids[name]} if name in self.role_ids else None
 
-    def add_project_user_role(self, project_id, user_id, role_id):
+    def add_project_user_role(self, project_id, user_id, role_id, audit_ctx=None):
         self.roles.setdefault((project_id, user_id), set()).add(role_id)
 
-    def update_project_user_roles(self, project_id, user_id, role_ids):
+    def update_project_user_roles(self, project_id, user_id, role_ids, audit_ctx=None):
         if role_ids:
             self.roles[(project_id, user_id)] = set(role_ids)
         else:
@@ -84,7 +84,7 @@ def rpc(monkeypatch):
     def make(owner_lookup_fails=False):
         fake_auth = FakeAuth()
         module = _load(monkeypatch, fake_auth)
-        instance = types.SimpleNamespace()
+        instance = types.SimpleNamespace(lifecycle_audit_ctx=lambda *a: {"actor_type": "system", "source": "system"})
         for name in ("add_user_to_project", "update_roles_for_user"):
             setattr(instance, name, types.MethodType(getattr(module.RPC, name), instance))
         instance.context = types.SimpleNamespace(

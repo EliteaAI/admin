@@ -175,7 +175,7 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
                 results.append({'msg': e.errors()[0]["msg"], 'status': 'error'})
                 continue
             result = self.module.context.rpc_manager.call.add_user_to_project_or_create(
-                user_email, project_id, user_roles)
+                user_email, project_id, user_roles, audit_ctx=self.module.lifecycle_audit_ctx())
             results.append(result)
         added_ids = {r['id'] for r in results if r.get('status') == 'ok'}
         has_errors = any(r.get('status') == 'error' for r in results)
@@ -218,7 +218,7 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
         if refusal:
             return refusal
         result = self.module.context.rpc_manager.call.update_roles_for_user(
-            project_id, user_ids, new_user_roles)
+            project_id, user_ids, new_user_roles, audit_ctx=self.module.lifecycle_audit_ctx())
         return {'msg': f'roles updated' if result else 'something is wrong'}, 200
 
     @register_openapi(

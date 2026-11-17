@@ -235,6 +235,13 @@ class Module(module.ModuleModel):
                 "default": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
             }
         })
+        # Project and user lifecycle audit (#7504): view + CSV export, platform admins
+        auth.register_permissions({
+            "permissions": ["models.admin.lifecycle_audit.view"],
+            "recommended_roles": {
+                "administration": {"super_admin": True, "admin": True, "viewer": False, "editor": False},
+            }
+        })
         auth.register_permissions({
             "permissions": ["admin.auth.users"],
             "recommended_roles": {
@@ -411,6 +418,7 @@ class Module(module.ModuleModel):
         except Exception:  # pylint: disable=W0703
             log.warning("Could not register restore jobs reap schedule", exc_info=True)
 
+        self.lifecycle_audit_register_schedules()
         self._start_scim()
         self._register_openapi()
 

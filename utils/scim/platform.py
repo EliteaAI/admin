@@ -3,6 +3,9 @@ from pylon.core.tools import log  # pylint: disable=E0401
 from tools import auth, this  # pylint: disable=E0401
 
 SERVICE_USER_EMAIL = "scim_provisioner@centry.user"
+# Lifecycle audit actor of every change the SCIM sync makes (#7504)
+SCIM_AUDIT_CTX = {"actor_type": "service", "actor_id": None, "actor_name": "SCIM provisioning",
+                  "actor_email": None, "source": "provisioning", "request_id": None}
 
 
 class Platform:
@@ -30,14 +33,14 @@ class Platform:
             create_keycloak_user(email, rpc_manager=self.rpc)
         except Exception as exc:  # pylint: disable=W0703
             log.warning("SCIM: Keycloak user %s not created: %s", email, exc)
-        user_id = auth.add_user(email)
+        user_id = auth.add_user(email, audit_ctx=SCIM_AUDIT_CTX)
         auth.add_user_provider(user_id, email)
         auth.add_user_group(user_id, 1)
         return user_id
 
     @staticmethod
     def set_user_suspended(user_id, suspended):
-        auth.update_user(id_=user_id, suspended=bool(suspended))
+        auth.update_user(id_=user_id, suspended=bool(suspended), audit_ctx=SCIM_AUDIT_CTX)
 
     @staticmethod
     def is_user_suspended(user_id):
@@ -67,7 +70,7 @@ class Platform:
             self._service_user_id = user["id"]
             return self._service_user_id
         try:
-            user_id = auth.add_user(SERVICE_USER_EMAIL, "SCIM provisioning")
+            user_id = auth.add_user(SERVICE_USER_EMAIL, "SCIM provisioning", audit_ctx=SCIM_AUDIT_CTX)
             auth.add_user_provider(user_id, SERVICE_USER_EMAIL)
             self._service_user_id = user_id
         except Exception:  # pylint: disable=W0703
@@ -83,7 +86,7 @@ class Platform:
         owner_id = self.service_user_id()
         if not owner_id:
             raise RuntimeError("The SCIM service user is not available")
-        return self.rpc.timeout(600).projects_scim_create(name=name, owner_id=owner_id)
+        return self.rpc.timeout(600).projects_scim_create(name=name, owner_id=owner_id, audit_ctx=SCIM_AUDIT_CTX)
 
     def find_projects_by_name(self, name):
         """ Team projects a group may be linked to: never the public/AI or support project """
@@ -92,7 +95,9 @@ class Platform:
         return [pid for pid in self.rpc.timeout(30).projects_scim_find_by_name(name=name) or [] if pid not in system]
 
     def set_project_suspended(self, project_id, suspended):
-        self.rpc.timeout(30).projects_scim_set_suspended(project_id=project_id, suspended=suspended)
+        self.rpc.timeout(30).projects_scim_set_suspended(
+            project_id=project_id, suspended=suspended, audit_ctx=SCIM_AUDIT_CTX,
+        )
 
     # membership: the SCIM path through the guarded RPCs
 
@@ -100,12 +105,16 @@ class Platform:
         return self.rpc.timeout(30).admin_get_users_ids_in_project(project_id)
 
     def add_member(self, project_id, user_id, role):
-        self.rpc.timeout(30).admin_add_user_to_project(project_id, user_id, [role], scim_sync=True)
+        self.rpc.timeout(30).admin_add_user_to_project(
+            project_id, user_id, [role], scim_sync=True, audit_ctx=SCIM_AUDIT_CTX,
+        )
         self.rpc.timeout(10).clear_user_projects_cache([user_id])
         return True
 
     def remove_member(self, project_id, user_id):
-        self.rpc.timeout(30).admin_remove_users_from_project(project_id, [user_id], scim_sync=True)
+        self.rpc.timeout(30).admin_remove_users_from_project(
+            project_id, [user_id], scim_sync=True, audit_ctx=SCIM_AUDIT_CTX,
+        )
         self.rpc.timeout(10).clear_user_projects_cache([user_id])
 
     @staticmethod

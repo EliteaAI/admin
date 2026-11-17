@@ -23,7 +23,8 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903,C0115
             return {"error": "suspended field is required"}, 400
         #
         try:
-            auth.update_user(id_=user_id, suspended=bool(suspended))
+            auth.update_user(id_=user_id, suspended=bool(suspended),
+                             audit_ctx=self.module.lifecycle_audit_ctx())
         except RuntimeError as e:
             return {"error": str(e)}, 404
         #

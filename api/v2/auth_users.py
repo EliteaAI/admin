@@ -88,6 +88,8 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         if action == "create" and "user_email" not in data:
             return {"error": "user_email not set"}, 400
         #
+        audit_ctx = self.module.lifecycle_audit_ctx()
+        #
         if action == "delete":
             for user in data["users"]:
                 # Resolve membership before auth.delete_user so handlers can
@@ -109,10 +111,10 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
                     "user_deleted",
                     {"user_id": user["id"], "project_ids": project_ids},
                 )
-                auth.delete_user(user["id"])
+                auth.delete_user(user["id"], audit_ctx=audit_ctx)
         #
         if action == "create":
-            user_id = auth.add_user(data["user_email"], data["user_name"])
+            user_id = auth.add_user(data["user_email"], data["user_name"], audit_ctx=audit_ctx)
             auth.add_user_group(user_id, 1)
         #
         if action == "set_admin_role":
@@ -146,6 +148,7 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
                     user_id=user_id,
                     role_name=role_name,
                     mode="administration",
+                    audit_ctx=audit_ctx,
                 )
             else:
                 for role in valid_roles:
@@ -154,6 +157,7 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
                             user_id=user_id,
                             role_name=role,
                             mode="administration",
+                            audit_ctx=audit_ctx,
                         )
                     except Exception:
                         pass

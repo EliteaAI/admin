@@ -21,6 +21,28 @@ import json
 
 from tools import context, log, auth  # pylint: disable=E0401
 
+
+def _task_audit_ctx(kwargs):
+    """ Lifecycle audit actor of an admin task: its executing user, System for a scheduled run (#7504) """
+    from tools import this  # pylint: disable=E0401,C0415
+    return this.for_module("admin").module.lifecycle_audit_ctx(kwargs.get("_executing_user_id"))
+
+
+def _record_suspended(this, session, project, audit_ctx):
+    """ project.suspended in the session that suspends the project (#7504, AC-25) """
+    if project.suspended:
+        return
+    # An audit outage must not block the suspension (AC-23)
+    try:
+        from ..utils.lifecycle_audit import events  # pylint: disable=C0415
+        this.for_module("admin").module.lifecycle_audit_record(session, events.build(
+            "project.suspended", audit_ctx, "project",
+            project={"id": project.id, "name": project.name},
+            changes={"suspended": {"before": False, "after": True}},
+        ))
+    except Exception:  # pylint: disable=W0703
+        log.exception("Lifecycle audit: project.suspended of project %s not recorded", project.id)
+
 PROTECTED_USER_ID = 1
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -245,9 +267,10 @@ def suspend_projects_and_users(*args, **kwargs):  # pylint: disable=W0613,R0912,
         {"scope": "private_with_users", "project_ids": [101], "dry_run": true}
     """
     from plugins.projects.models.project import Project  # pylint: disable=E0401,C0415
-    from tools import db  # pylint: disable=E0401,C0415
+    from tools import db, this  # pylint: disable=E0401,C0415
     #
     params = parse_param(kwargs.get("param", ""))
+    audit_ctx = _task_audit_ctx(kwargs)
     #
     scope = params.get("scope")
     if scope not in {"private_with_users", "team_projects"}:
@@ -327,6 +350,7 @@ def suspend_projects_and_users(*args, **kwargs):  # pylint: disable=W0613,R0912,
                     db_project = session.query(Project).where(Project.id == project["id"]).first()
                     if not db_project:
                         raise RuntimeError(f"Project {project['id']} disappeared before suspension")
+                    _record_suspended(this, session, db_project, audit_ctx)
                     db_project.suspended = True
                     session.commit()
                 log.info("Suspended team project_id=%s reason=%r", project["id"], reason)
@@ -417,10 +441,11 @@ def suspend_projects_and_users(*args, **kwargs):  # pylint: disable=W0613,R0912,
                             raise RuntimeError(
                                 f"Personal project {personal_project_id} disappeared before suspension"
                             )
+                        _record_suspended(this, session, db_project, audit_ctx)
                         db_project.suspended = True
                         session.commit()
                 if not user_suspended:
-                    auth.update_user(id_=user["id"], suspended=True)
+                    auth.update_user(id_=user["id"], suspended=True, audit_ctx=audit_ctx)
                 log.info(
                     "Suspended user_id=%s and personal project_id=%s reason=%r",
                     user["id"], personal_project_id, reason,
@@ -458,6 +483,7 @@ def delete_users_with_private_projects_cascade(*args, **kwargs):  # pylint: disa
     from tools import this  # pylint: disable=E0401,C0415
     #
     params = parse_param(kwargs.get("param", ""))
+    audit_ctx = _task_audit_ctx(kwargs)
     #
     user_ids = _to_int_list(params.get("user_ids"), "user_ids")
     user_emails = _to_list(params.get("user_emails"))
@@ -568,7 +594,7 @@ def delete_users_with_private_projects_cascade(*args, **kwargs):  # pylint: disa
             for team_project_id in team_project_ids:
                 log.info("Removing user_id=%s from team project_id=%s", user_id, team_project_id)
                 context.rpc_manager.call.admin_remove_users_from_project(
-                    team_project_id, [user_id], system_cleanup=True,
+                    team_project_id, [user_id], system_cleanup=True, audit_ctx=audit_ctx,
                 )
             #
             if personal_project_id and personal_project:
@@ -576,10 +602,11 @@ def delete_users_with_private_projects_cascade(*args, **kwargs):  # pylint: disa
                 delete_project(
                     project_id=personal_project_id,
                     module=this.for_module("projects").module,
+                    audit_ctx=audit_ctx,
                 )
             #
             log.info("Deleting user_id=%s", user_id)
-            auth.delete_user(user_id)
+            auth.delete_user(user_id, audit_ctx=audit_ctx)
             #
             deleted += 1
         except Exception:  # pylint: disable=W0703

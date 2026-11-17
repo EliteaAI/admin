@@ -82,7 +82,7 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         role = data["role"]
         #
         self.module.context.rpc_manager.call.auth_assign_user_to_role(
-            user_id, role, mode
+            user_id, role, mode, audit_ctx=self.module.lifecycle_audit_ctx(),
         )
         #
         return {"ok": True}

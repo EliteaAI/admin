@@ -31,6 +31,12 @@ SUPER_ADMIN_ONLY_PERMISSIONS = {
 }
 
 
+def _task_audit_ctx(kwargs):
+    """ Lifecycle audit actor: the admin running this task (#7504) """
+    from tools import this  # pylint: disable=E0401,C0415
+    return this.for_module("admin").module.lifecycle_audit_ctx(kwargs.get("_executing_user_id"))
+
+
 def migrate_admin_to_super_admin(*args, **kwargs):
     """Migrate 'admin' role to 'super_admin' in administration mode and create new limited 'admin'. No params."""
     #
@@ -100,6 +106,7 @@ def migrate_admin_to_super_admin(*args, **kwargs):
                             user_id=user_id,
                             role_name="super_admin",
                             mode=mode,
+                            audit_ctx=_task_audit_ctx(kwargs),
                         )
                     except Exception:  # pylint: disable=W0703
                         log.info("User %s already has super_admin role, skipping assign", user_id)
@@ -110,6 +117,7 @@ def migrate_admin_to_super_admin(*args, **kwargs):
                             user_id=user_id,
                             role_name="admin",
                             mode=mode,
+                            audit_ctx=_task_audit_ctx(kwargs),
                         )
                         reassigned += 1
                         log.info("Reassigned user %s from admin to super_admin", user_id)

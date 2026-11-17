@@ -42,7 +42,7 @@ def tasks(monkeypatch):
     tools.log = log
     tools.auth = types.SimpleNamespace(
         list_users=lambda: [{"id": 10, "email": "member@x.com", "last_login": None}],
-        delete_user=deleted.append,
+        delete_user=lambda user_id, audit_ctx=None: deleted.append(user_id),
     )
     tools.this = types.SimpleNamespace(for_module=lambda name: types.SimpleNamespace(module=None))
     poc = types.ModuleType("plugins.projects.rpc.poc")
@@ -58,6 +58,7 @@ def tasks(monkeypatch):
     lifecycle = types.ModuleType("fake5202tasks.tasks.lifecycle_tasks")
     lifecycle.parse_param = lambda *a, **k: {}
     lifecycle._to_bool = bool  # pylint: disable=W0212
+    lifecycle._task_audit_ctx = lambda kwargs: {"actor_type": "system"}  # pylint: disable=W0212
     logs = types.ModuleType("fake5202tasks.tasks.logs")
     logs.make_logger = lambda: None
     stubs[lifecycle.__name__] = lifecycle
