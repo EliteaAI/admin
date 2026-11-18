@@ -45,14 +45,23 @@ def api(monkeypatch):
     utils = types.ModuleType("fake5202users.utils")
     utils.validate_role_assignment = lambda roles: (True, [])
     utils.get_role_validation_error = lambda roles: ({}, 400)
+    utils.__path__ = []
+    notification_helpers = types.ModuleType("fake5202users.utils.project_membership_notifications")
+    notification_helpers.notify_project_membership_change = (
+        lambda *args, **kwargs: calls.append(("notification", args[1:], kwargs))
+    )
     pd_module = types.ModuleType("fake5202users.models.pd.user_input_field")
     pd_module.UserInputFieldPD = lambda **k: None
     stubs = {
-        "tools": tools, "tools.auth": auth, "flask": types.SimpleNamespace(request=request),
+        "tools": tools, "tools.auth": auth,
+        "flask": types.SimpleNamespace(request=request, g=types.SimpleNamespace(
+            auth=types.SimpleNamespace(id=1))),
         "pylon": types.ModuleType("pylon"), "pylon.core": types.ModuleType("pylon.core"),
         "pylon.core.tools": pylon_tools, "pydantic": types.SimpleNamespace(ValidationError=ValueError),
         "pydantic.v1": types.SimpleNamespace(ValidationError=ValueError),
-        "fake5202users.utils": utils, "fake5202users.models.pd.user_input_field": pd_module,
+        "fake5202users.utils": utils,
+        "fake5202users.utils.project_membership_notifications": notification_helpers,
+        "fake5202users.models.pd.user_input_field": pd_module,
     }
     for name in ("fake5202users", "fake5202users.api", "fake5202users.api.v2", "fake5202users.models",
                  "fake5202users.models.pd"):
@@ -74,6 +83,10 @@ def api(monkeypatch):
         calls.append(("roles", project_id, list(user_ids), roles))
         return True
 
+    def remove_users_from_project(project_id, user_ids, **kwargs):
+        calls.append(("remove", project_id, user_ids, kwargs))
+        return [9]
+
     instance = module.API()
     instance.module = types.SimpleNamespace(
         scim=types.SimpleNamespace(guards=FakeGuards()),
@@ -82,7 +95,7 @@ def api(monkeypatch):
                 add_user_to_project_or_create=add_user_to_project_or_create,
                 update_roles_for_user=update_roles_for_user)),
             event_manager=types.SimpleNamespace(fire_event=lambda *a: None)),
-        remove_users_from_project=lambda *a: calls.append(("remove",) + a),
+        remove_users_from_project=remove_users_from_project,
         lifecycle_audit_ctx=lambda: {"actor_type": "user", "actor_id": 1},  # #7504
     )
     return instance, request, calls
@@ -97,7 +110,41 @@ def post(api, project_id, roles, mode):
 @pytest.mark.parametrize("roles, mode", [(["viewer"], "default"), (["admin"], "administration")])
 def test_manual_add_to_linked_project_is_allowed(api, roles, mode):
     result = post(api, PROTECTED, roles, mode)
-    assert result[1] == 200 and api[2] == [("new@contoso.com", PROTECTED, roles)]
+    assert result[1] == 200
+    assert api[2][0] == ("new@contoso.com", PROTECTED, roles)
+    assert api[2][-1] == (
+        "notification",
+        (PROTECTED, {9}, "user_was_added_to_some_project_as_teammate"),
+        {"actor_id": 1},
+    )
+
+
+def test_mixed_add_results_notify_only_committed_successes_and_keep_the_400_response(api):
+    instance, request, calls = api
+
+    def add_user(email, project_id, roles, audit_ctx=None):  # pylint: disable=W0613
+        calls.append((email, project_id, roles))
+        if email == "new@contoso.com":
+            return {"status": "ok", "id": 9, "email": email}
+        return {"status": "error", "email": email}
+
+    instance.module.context.rpc_manager.call.add_user_to_project_or_create = add_user
+    request.json = {"emails": ["new@contoso.com", "failed@contoso.com"], "roles": ["viewer"]}
+
+    result = instance.post(project_id=PROTECTED, mode="default")
+
+    assert result == (
+        [
+            {"status": "ok", "id": 9, "email": "new@contoso.com"},
+            {"status": "error", "email": "failed@contoso.com"},
+        ],
+        400,
+    )
+    assert calls[-1] == (
+        "notification",
+        (PROTECTED, {9}, "user_was_added_to_some_project_as_teammate"),
+        {"actor_id": 1},
+    )
 
 
 def delete(api, ids):
@@ -112,8 +159,17 @@ def test_removing_a_synced_member_is_refused(api):
 
 
 def test_removing_a_manual_member_is_allowed(api):
-    result = delete(api, "9")
-    assert result[1] == 204 and api[2][0][0] == "remove"
+    result = delete(api, "9,9,10")
+    assert result[1] == 204
+    assert api[2][0] == (
+        "remove", PROTECTED, [9, 10],
+        {"audit_ctx": {"actor_type": "user", "actor_id": 1}, "return_removed_ids": True},
+    )
+    assert api[2][1] == (
+        "notification",
+        (PROTECTED, [9], "user_was_removed_from_project"),
+        {},
+    )
 
 
 def put(api, project_id, user_id, roles):

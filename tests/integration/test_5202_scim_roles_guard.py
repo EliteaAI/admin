@@ -26,11 +26,13 @@ class FakeAuth:
     def add_project_user_role(self, project_id, user_id, role_id, audit_ctx=None):
         self.roles.setdefault((project_id, user_id), set()).add(role_id)
 
-    def update_project_user_roles(self, project_id, user_id, role_ids, audit_ctx=None):
+    def update_project_user_roles(self, project_id, user_id, role_ids, audit_ctx=None, return_removed=False):
+        had_roles = bool(self.roles.get((project_id, user_id)))
         if role_ids:
             self.roles[(project_id, user_id)] = set(role_ids)
         else:
             self.roles.pop((project_id, user_id), None)
+        return had_roles if return_removed else True
 
     def list_project_roles(self, project_id):
         return [{"id": i, "name": n} for n, i in self.role_ids.items()]
@@ -114,6 +116,21 @@ def test_removing_a_manual_member_is_allowed(rpc):
     instance.add_user_to_project(PROTECTED, 9, ["viewer"])
     instance.remove_users_from_project(PROTECTED, [9])
     assert (PROTECTED, 9) not in fake_auth.roles
+
+
+def test_manual_removal_returns_only_memberships_that_were_removed(rpc):
+    instance, fake_auth = rpc
+    instance.add_user_to_project(3, 9, ["viewer"])
+    events = []
+    instance.context.event_manager.fire_event = lambda *event: events.append(event)
+
+    removed_ids = instance.remove_users_from_project(3, [9, 9, 404], return_removed_ids=True)
+
+    assert removed_ids == [9]
+    assert fake_auth.roles.get((3, 9)) is None
+    assert events == [
+        ("user_removed_from_project", {"project_id": 3, "user_ids": [9, 404]})
+    ]
 
 
 @pytest.mark.parametrize("flag", ["scim_sync", "system_cleanup"])

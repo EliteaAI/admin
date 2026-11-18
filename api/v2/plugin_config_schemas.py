@@ -77,6 +77,12 @@ SECTION_DEFINITIONS = {
         "description": "Manage service descriptors for external provider integrations.",
         "required_permission": "configuration.service_descriptors",
     },
+    "notifications": {
+        "title": "User Management",
+        "order": 9,
+        "icon": "notifications",
+        "description": "Configure notifications for team project membership changes.",
+    },
     "resources": {
         "title": "Resources",
         "order": 88,

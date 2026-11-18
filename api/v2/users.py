@@ -19,7 +19,7 @@
 import datetime
 import json
 
-from flask import request
+from flask import g, request
 
 try:
     from pydantic.v1 import ValidationError
@@ -31,6 +31,7 @@ from tools import auth, api_tools, register_openapi  # pylint: disable=E0401
 
 from ...models.pd.user_input_field import UserInputFieldPD
 from ...utils import validate_role_assignment, get_role_validation_error
+from ...utils.project_membership_notifications import notify_project_membership_change
 
 
 LIMIT_ERROR = "limit must be a whole number from 1 to 100"
@@ -182,6 +183,18 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
         self.module.context.event_manager.fire_event(
             "user_added_to_project", {'project_id': project_id, 'user_ids': added_ids},
         )
+        actor_id = getattr(getattr(g, "auth", None), "id", None)
+        try:
+            actor_id = int(actor_id) if actor_id is not None else None
+        except (TypeError, ValueError):
+            actor_id = None
+        notify_project_membership_change(
+            self.module,
+            project_id,
+            added_ids,
+            "user_was_added_to_some_project_as_teammate",
+            actor_id=actor_id,
+        )
         return results, 400 if has_errors else 200
 
     @register_openapi(
@@ -240,12 +253,29 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
     @api_tools.endpoint_metrics
     def delete(self, project_id: int, **kwargs):
         try:
-            delete_ids = list(map(int, request.args["id[]"].split(',')))
+            delete_ids = list(dict.fromkeys(map(int, request.args["id[]"].split(','))))
         except TypeError:
             return 'IDs must be integers', 400
         refusal = _scim_refusal(self.module, project_id, delete_ids)
         if refusal:
             return refusal
         # remove_users_from_project fires user_removed_from_project itself.
-        self.module.remove_users_from_project(project_id, delete_ids)
+        removed_ids = self.module.remove_users_from_project(
+            project_id,
+            delete_ids,
+            audit_ctx=self.module.lifecycle_audit_ctx(),
+            return_removed_ids=True,
+        )
+        if isinstance(removed_ids, list):
+            notify_project_membership_change(
+                self.module,
+                project_id,
+                removed_ids,
+                "user_was_removed_from_project",
+            )
+        else:
+            log.warning(
+                "Detailed project removal results unavailable; skipping membership notifications project_id=%s",
+                project_id,
+            )
         return {'msg': 'users successfully removed'}, 204
