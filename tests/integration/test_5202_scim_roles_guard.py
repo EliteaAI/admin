@@ -134,10 +134,22 @@ def test_manual_removal_returns_only_memberships_that_were_removed(rpc):
 
 
 @pytest.mark.parametrize("flag", ["scim_sync", "system_cleanup"])
-def test_sync_and_user_cleanup_may_remove_synced_members(rpc, flag):
+def test_sync_and_user_cleanup_can_use_older_auth_core(rpc, monkeypatch, flag):
     instance, fake_auth = rpc
-    instance.remove_users_from_project(PROTECTED, [5], **{flag: True})
+    update_roles = fake_auth.update_project_user_roles
+    events = []
+    instance.context.event_manager.fire_event = lambda *event: events.append(event)
+
+    def legacy_update_roles(project_id, user_id, role_ids, audit_ctx=None):
+        assert audit_ctx == {"actor_type": "system", "source": "system"}
+        return update_roles(project_id, user_id, role_ids)
+
+    monkeypatch.setattr(fake_auth, "update_project_user_roles", legacy_update_roles)
+    assert instance.remove_users_from_project(PROTECTED, [5], **{flag: True}) is True
     assert (PROTECTED, 5) not in fake_auth.roles
+    assert events == [
+        ("user_removed_from_project", {"project_id": PROTECTED, "user_ids": [5]})
+    ]
 
 
 def test_role_change_of_synced_member_is_allowed(rpc):

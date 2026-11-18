@@ -19,7 +19,7 @@
 import datetime
 import json
 
-from flask import g, request
+from flask import request
 
 try:
     from pydantic.v1 import ValidationError
@@ -168,6 +168,7 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
         if not is_valid:
             return get_role_validation_error(invalid_roles)
 
+        actor_id = auth.current_user()["id"]
         results = []
         for user_email in user_emails:
             try:
@@ -183,11 +184,6 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
         self.module.context.event_manager.fire_event(
             "user_added_to_project", {'project_id': project_id, 'user_ids': added_ids},
         )
-        actor_id = getattr(getattr(g, "auth", None), "id", None)
-        try:
-            actor_id = int(actor_id) if actor_id is not None else None
-        except (TypeError, ValueError):
-            actor_id = None
         notify_project_membership_change(
             self.module,
             project_id,

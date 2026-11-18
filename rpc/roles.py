@@ -159,8 +159,11 @@ class RPC:
         audit_ctx = _audit_ctx(self, audit_ctx)
         removed_ids = []
         for user_id in user_ids:
-            if auth.update_project_user_roles(project_id, user_id, [], audit_ctx=audit_ctx, return_removed=True):
-                removed_ids.append(user_id)
+            if return_removed_ids:
+                if auth.update_project_user_roles(project_id, user_id, [], audit_ctx=audit_ctx, return_removed=True):
+                    removed_ids.append(user_id)
+            else:
+                auth.update_project_user_roles(project_id, user_id, [], audit_ctx=audit_ctx)
         # Fired here rather than at each call site: the user-deletion cascade tasks reach
         # this RPC directly, and subscribers' per-project cleanup must run for them too.
         log.info("[admin_roles] firing user_removed_from_project project_id=%s user_ids=%s", project_id, user_ids)

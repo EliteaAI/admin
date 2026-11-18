@@ -36,6 +36,7 @@ def api(monkeypatch):
     auth = types.ModuleType("tools.auth")
     auth.decorators = types.SimpleNamespace(check_api=lambda config: (lambda f: f))
     auth.list_project_users = lambda project_id: [5]
+    auth.current_user = lambda: {"id": 1}
     tools = types.ModuleType("tools")
     tools.auth = auth
     tools.api_tools = types.SimpleNamespace(APIModeHandler=object, APIBase=object, endpoint_metrics=lambda f: f)
@@ -55,7 +56,7 @@ def api(monkeypatch):
     stubs = {
         "tools": tools, "tools.auth": auth,
         "flask": types.SimpleNamespace(request=request, g=types.SimpleNamespace(
-            auth=types.SimpleNamespace(id=1))),
+            auth=types.SimpleNamespace(type="token", id=9))),
         "pylon": types.ModuleType("pylon"), "pylon.core": types.ModuleType("pylon.core"),
         "pylon.core.tools": pylon_tools, "pydantic": types.SimpleNamespace(ValidationError=ValueError),
         "pydantic.v1": types.SimpleNamespace(ValidationError=ValueError),
@@ -108,7 +109,7 @@ def post(api, project_id, roles, mode):
 
 
 @pytest.mark.parametrize("roles, mode", [(["viewer"], "default"), (["admin"], "administration")])
-def test_manual_add_to_linked_project_is_allowed(api, roles, mode):
+def test_token_authenticated_add_uses_actor_user_id_not_token_id(api, roles, mode):
     result = post(api, PROTECTED, roles, mode)
     assert result[1] == 200
     assert api[2][0] == ("new@contoso.com", PROTECTED, roles)
