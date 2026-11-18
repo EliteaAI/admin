@@ -96,7 +96,7 @@ def make_env(plugin_root, monkeypatch):
         tools.register_openapi = lambda **k: (lambda f: f)
         monkeypatch.setitem(sys.modules, "tools", tools)
         monkeypatch.setitem(sys.modules, "tools.auth", fake_auth)
-        monkeypatch.setitem(sys.modules, "flask", types.SimpleNamespace(request=None))
+        monkeypatch.setitem(sys.modules, "flask", types.SimpleNamespace(request=None, g=types.SimpleNamespace()))
         for name in ("pydantic", "pydantic.v1"):
             monkeypatch.setitem(sys.modules, name, types.SimpleNamespace(ValidationError=ValueError))
         pylon_tools = types.ModuleType("pylon.core.tools")
@@ -108,14 +108,18 @@ def make_env(plugin_root, monkeypatch):
         pd_module = types.ModuleType("fakeadmin.models.pd.user_input_field")
         pd_module.UserInputFieldPD = object
         utils = types.ModuleType("fakeadmin.utils")
+        utils.__path__ = []
         utils.validate_role_assignment = lambda roles: (True, [])
         utils.get_role_validation_error = lambda roles: ({}, 400)
+        notification_helpers = types.ModuleType("fakeadmin.utils.project_membership_notifications")
+        notification_helpers.notify_project_membership_change = lambda *_args, **_kwargs: None
         for name in ("fakeadmin", "fakeadmin.api", "fakeadmin.api.v2", "fakeadmin.models", "fakeadmin.models.pd"):
             package = types.ModuleType(name)
             package.__path__ = []
             monkeypatch.setitem(sys.modules, name, package)
         monkeypatch.setitem(sys.modules, "fakeadmin.models.pd.user_input_field", pd_module)
         monkeypatch.setitem(sys.modules, "fakeadmin.utils", utils)
+        monkeypatch.setitem(sys.modules, notification_helpers.__name__, notification_helpers)
 
         spec = importlib.util.spec_from_file_location(
             "fakeadmin.api.v2.users", plugin_root / "api" / "v2" / "users.py"
