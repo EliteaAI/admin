@@ -22,7 +22,7 @@ class FakeAuth(types.ModuleType):
     def update_role_name(self, name, new_name, mode):
         self.calls.append(("update_role_name", mode))
 
-    def delete_role(self, name, mode):
+    def delete_role(self, name, mode, audit_ctx=None):
         self.calls.append(("delete_role", mode))
 
 
@@ -65,6 +65,13 @@ def api(plugin_root, monkeypatch):
     return module, fake_auth
 
 
+def _handler(module):
+    """ The real APIModeHandler reaches self.module through its API object (#7504 asks it for the audit ctx) """
+    handler = module.AdminAPI()  # APIModeHandler is stubbed as object here
+    handler.module = types.SimpleNamespace(lifecycle_audit_ctx=lambda: {"actor_type": "system"})
+    return handler
+
+
 def call_all(handler, mode):
     return [
         handler.get(mode), handler.post(mode), handler.put(mode), handler.delete(mode),
@@ -74,7 +81,7 @@ def call_all(handler, mode):
 def test_unknown_mode_gets_400_and_never_reaches_auth(api):
     module, fake_auth = api
 
-    results = call_all(module.AdminAPI(), "developer")
+    results = call_all(_handler(module), "developer")
 
     assert all(r == ({"error": "Unknown role mode: developer"}, 400) for r in results)
     assert fake_auth.calls == []
@@ -84,7 +91,7 @@ def test_unknown_mode_gets_400_and_never_reaches_auth(api):
 def test_known_modes_reach_auth(api, mode):
     module, fake_auth = api
 
-    call_all(module.AdminAPI(), mode)
+    call_all(_handler(module), mode)
 
     assert [c[0] for c in fake_auth.calls] == ["get_roles", "add_role", "update_role_name", "delete_role"]
     assert {c[1] for c in fake_auth.calls} == {mode}

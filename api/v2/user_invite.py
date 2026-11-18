@@ -74,7 +74,7 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
             if auth_user_id is None:
                 # Create new user record
                 auth_user_id = self.module.context.rpc_manager.call.auth_add_user(
-                    user_email, user_name
+                    user_email, user_name, audit_ctx=self.module.lifecycle_audit_ctx(),
                 )
                 #
                 self.module.context.rpc_manager.call.auth_add_user_group(auth_user_id, 1)

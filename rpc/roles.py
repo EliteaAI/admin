@@ -48,6 +48,11 @@ def _owner_only_admin(module, project_id, user_id, role_names):
     return [name for name in role_names if name != "admin"]
 
 
+def _audit_ctx(module, audit_ctx):
+    """ The caller's audit context, else the current request's / System (#7504) """
+    return audit_ctx if audit_ctx is not None else module.lifecycle_audit_ctx()
+
+
 class RPC:
 
     #
@@ -71,8 +76,8 @@ class RPC:
         return last_role
 
     @web.rpc("admin_delete_role", "delete_role")
-    def delete_role(self, project_id: int, role_name: str, **kwargs) -> bool:
-        auth.delete_project_role(project_id, name=role_name)
+    def delete_role(self, project_id: int, role_name: str, audit_ctx=None, **kwargs) -> bool:
+        auth.delete_project_role(project_id, name=role_name, audit_ctx=_audit_ctx(self, audit_ctx))
         return True
 
     @web.rpc("admin_update_role_name", "update_role_name")
@@ -130,26 +135,28 @@ class RPC:
 
     @web.rpc("admin_add_user_to_project", "add_user_to_project")
     def add_user_to_project(self, project_id: int, user_id: int, role_names: list[str],
-                            **kwargs) -> bool:
+                            audit_ctx=None, **kwargs) -> bool:
+        audit_ctx = _audit_ctx(self, audit_ctx)
         role_names = _owner_only_admin(self, project_id, user_id, role_names)
         user_roles = auth.list_project_user_roles(project_id, user_id)
         existing_role_ids = {r['role_id'] for r in user_roles}
         for role_name in role_names:
             role = auth.get_project_role(project_id, name=role_name)
             if role and role['id'] not in existing_role_ids:
-                auth.add_project_user_role(project_id, user_id, role['id'])
+                auth.add_project_user_role(project_id, user_id, role['id'], audit_ctx=audit_ctx)
         return True
 
     @web.rpc("admin_remove_users_from_project", "remove_users_from_project")
     def remove_users_from_project(self, project_id: int, user_ids: list[int], scim_sync: bool = False,
-                                  system_cleanup: bool = False, **kwargs) -> bool:
+                                  system_cleanup: bool = False, audit_ctx=None, **kwargs) -> bool:
         """ scim_sync, system_cleanup (a platform task deleting the user): may remove members synced from SCIM """
         if not user_ids:
             return True
         if not (scim_sync or system_cleanup):
             _refuse_removing_synced(self, project_id, user_ids)
+        audit_ctx = _audit_ctx(self, audit_ctx)
         for user_id in user_ids:
-            auth.update_project_user_roles(project_id, user_id, [])
+            auth.update_project_user_roles(project_id, user_id, [], audit_ctx=audit_ctx)
         # Fired here rather than at each call site: the user-deletion cascade tasks reach
         # this RPC directly, and subscribers' per-project cleanup must run for them too.
         log.info("[admin_roles] firing user_removed_from_project project_id=%s user_ids=%s", project_id, user_ids)
@@ -190,8 +197,10 @@ class RPC:
         return user_roles
 
     @web.rpc("update_roles_for_user", "admin_update_roles_for_user")
-    def update_roles_for_user(self, project_id: int, user_ids: List[int], new_roles: List[str], **kwargs) -> bool:
+    def update_roles_for_user(self, project_id: int, user_ids: List[int], new_roles: List[str],
+                              audit_ctx=None, **kwargs) -> bool:
         _refuse_removing_synced(self, project_id, user_ids, roles=list(new_roles))
+        audit_ctx = _audit_ctx(self, audit_ctx)
         roles_data = auth.list_project_roles(project_id)
         role_name_map = {r['name']: r['id'] for r in roles_data}
 
@@ -201,7 +210,7 @@ class RPC:
             if new_roles and not user_roles:
                 continue
             target_role_ids = [role_name_map[name] for name in user_roles if name in role_name_map]
-            auth.update_project_user_roles(project_id, user_id, target_role_ids)
+            auth.update_project_user_roles(project_id, user_id, target_role_ids, audit_ctx=audit_ctx)
         return True
 
     @web.rpc("admin_get_user_roles", "get_user_roles")

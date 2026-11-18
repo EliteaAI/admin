@@ -147,7 +147,7 @@ class AdminAPI(api_tools.APIModeHandler):
                         if missing_user_roles := set(role_map.keys()) - set(user_roles):
                             user_roles.extend(missing_user_roles)
                             self.module.context.rpc_manager.call.update_roles_for_user(
-                                project_id, user_id, user_roles
+                                project_id, user_id, user_roles, audit_ctx=self.module.lifecycle_audit_ctx(),
                             )
         return {'role_map': dict(role_map)}, 200
 

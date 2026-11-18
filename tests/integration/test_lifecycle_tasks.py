@@ -108,6 +108,14 @@ class FakeProjectRow:
         self._project_id = project_id
 
     @property
+    def id(self):
+        return self._project_id
+
+    @property
+    def name(self):
+        return self._projects_db[self._project_id].get("name")
+
+    @property
     def suspended(self):
         return self._projects_db[self._project_id]["suspended"]
 
@@ -192,11 +200,11 @@ def task_env(lifecycle_tasks):
             raise RuntimeError("User not found")
         return dict(user)
 
-    def update_user(id_, name=None, last_login=None, suspended=None):  # pylint: disable=unused-argument
+    def update_user(id_, name=None, last_login=None, suspended=None, audit_ctx=None):  # pylint: disable=unused-argument
         if suspended is not None:
             users[id_]["suspended"] = suspended
 
-    def delete_user(user_id):
+    def delete_user(user_id, audit_ctx=None):  # pylint: disable=unused-argument
         users.pop(user_id, None)
 
     lifecycle_tasks.auth.list_users = list_users
@@ -224,7 +232,7 @@ def task_env(lifecycle_tasks):
     sys.modules["plugins.projects.models"] = types.ModuleType("plugins.projects.models")
     sys.modules["plugins.projects.models.project"] = models_project_module
 
-    def delete_project(project_id, module):  # pylint: disable=unused-argument
+    def delete_project(project_id, module, audit_ctx=None):  # pylint: disable=unused-argument
         deleted_project_ids.append(project_id)
         projects.pop(project_id, None)
 
@@ -235,7 +243,11 @@ def task_env(lifecycle_tasks):
     sys.modules["plugins.projects.api.v2.project"] = api_v2_project_module
 
     this_module = types.ModuleType("tools.this")
-    this_module.for_module = lambda _name: types.SimpleNamespace(module=None)
+    # #7504: tasks ask the admin module for the audit context of their executing user
+    this_module.for_module = lambda _name: types.SimpleNamespace(module=types.SimpleNamespace(
+        lifecycle_audit_ctx=lambda executing_user_id=None: {"actor_type": "user", "actor_id": executing_user_id},
+        lifecycle_audit_record=lambda _session, _events: None,
+    ))
     sys.modules["tools"].this = this_module
     sys.modules["tools.this"] = this_module
 

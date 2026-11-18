@@ -115,6 +115,7 @@ class Method:  # pylint: disable=E1101,R0903
             ("create_tables_for_failed", db_tasks.create_tables_for_failed),
             ("propose_migrations", db_tasks.propose_migrations),
             ("create_database", db_tasks.create_database),
+            ("lifecycle_audit_provision", db_tasks.lifecycle_audit_provision),
             #
             ("indexer_migrate", indexer_tasks.indexer_migrate),
             #
