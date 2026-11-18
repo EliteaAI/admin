@@ -226,3 +226,13 @@ Run admin task migrate_user_system_tokens with an empty param
 # any of this - renaming them back would recreate the duplicates the index forbids.
 # They keep working. The pylon_auth boot log names the id and owner of every row the
 # revision renamed; that log is the only record of the original name.
+
+# ============================================================================
+# Project and user lifecycle audit (#7504)
+# ============================================================================
+# Run the admin task once per deployment, before or right after rollout:
+#   lifecycle_audit_provision
+# It creates admin_lifecycle_audit_{event,inbox,meta} (partitioned, append-only)
+# and the pg_trgm search index. Idempotent. Until it runs, writers log a failed
+# audit write and the changes themselves still succeed. The daily cron adds new
+# months only.

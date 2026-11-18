@@ -17,8 +17,9 @@
 
 """ Lifecycle audit payloads and actor contexts
 
-Same payload contract as auth_core ``tools/lifecycle_audit.py``; pylon_main adds the project
-name/type snapshot because it owns projects.
+The one canonical builder: auth_core (pylon_auth) only writes raw facts to its inbox, and
+normalize() runs on every event before it is stored, so scrubbing, admin access and project
+type are derived in one place.
 """
 
 import datetime
@@ -74,9 +75,30 @@ def admin_access(before, after, admin_roles):
     return "granted" if has else "revoked"
 
 
+def admin_roles_of(scope):
+    """ Administrator roles of a scope: platform roles for platform events, else project roles """
+    return PLATFORM_ADMIN_ROLES if scope == "platform" else PROJECT_ADMIN_ROLES
+
+
+def normalize(payload):
+    """ A stored event from any writer's payload: actor fields only, secrets dropped, derived fields set """
+    event = {key: value for key, value in payload.items() if key not in CTX_KEYS}
+    event.update(actor({key: payload.get(key) for key in CTX_KEYS} if payload.get("actor_type") else None))
+    event["changes"] = scrub(payload.get("changes") or {})
+    event["details"] = scrub(payload.get("details") or {})
+    if event.get("admin_access") is None and (
+            event.get("roles_before") is not None or event.get("roles_after") is not None):
+        event["admin_access"] = admin_access(
+            event.get("roles_before"), event.get("roles_after"), admin_roles_of(event.get("scope")),
+        )
+    if not event.get("project_type") and event.get("project_name"):
+        event["project_type"] = project_type(event["project_name"])
+    return event
+
+
 def build(  # pylint: disable=R0913
         event_type, ctx, scope, project=None, user=None, roles_before=None, roles_after=None,
-        changes=None, details=None, admin_roles=None,
+        changes=None, details=None,
 ):
     """ One audit payload """
     project = project or {}
@@ -91,18 +113,18 @@ def build(  # pylint: disable=R0913
         "imported": False,
         "project_id": project.get("id"),
         "project_name": project.get("name"),
-        "project_type": project.get("type") or (project_type(project["name"]) if project.get("name") else None),
+        "project_type": project.get("type"),
         "user_id": user.get("id"),
         "user_name": user.get("name"),
         "user_email": user.get("email"),
         "roles_before": roles_before,
         "roles_after": roles_after,
-        "admin_access": admin_access(roles_before, roles_after, admin_roles) if admin_roles else None,
-        "changes": scrub(changes or {}),
-        "details": scrub(details or {}),
+        "admin_access": None,
+        "changes": changes or {},
+        "details": details or {},
     }
     event.update(actor(ctx))
-    return event
+    return normalize(event)
 
 
 def ctx_from_auth(auth, user=None, request_id=None):

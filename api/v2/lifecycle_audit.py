@@ -52,7 +52,7 @@ PARAMETERS = [
     {"name": "sort_by", "in": "query", "schema": {"type": "string", "enum": sorted(query.SORT_COLUMNS)}},
     {"name": "sort_order", "in": "query", "schema": {"type": "string", "enum": ["asc", "desc"]}},
     {"name": "limit", "in": "query", "schema": {"type": "integer", "maximum": query.MAX_LIMIT}},
-    {"name": "offset", "in": "query", "schema": {"type": "integer"}},
+    {"name": "offset", "in": "query", "schema": {"type": "integer", "maximum": query.MAX_OFFSET}},
 ]
 
 

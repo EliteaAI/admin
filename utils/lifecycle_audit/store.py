@@ -23,8 +23,10 @@ range-partitioned ``admin_lifecycle_audit_event``, idempotently on event_id. An 
 no partition yet stays in its inbox (no DEFAULT partition) until ensure_partitions() creates it.
 
 The event table is append-only: triggers reject UPDATE / DELETE / TRUNCATE. Retention detaches and
-drops whole months. Everything takes a psycopg2 connection; only ensure_* / drain / apply_retention
-commit, record() leaves the commit to its caller.
+drops whole months. Tables, indexes and triggers are created by ensure_schema() from the
+``lifecycle_audit_provision`` admin task, never at plugin start; the daily cron only adds partitions.
+Everything takes a psycopg2 connection; only ensure_* / drain / apply_retention commit, record()
+leaves the commit to its caller.
 """
 
 import csv
@@ -114,6 +116,13 @@ CREATE OR REPLACE TRIGGER admin_lifecycle_audit_no_truncate
     BEFORE TRUNCATE ON {event} FOR EACH STATEMENT EXECUTE FUNCTION {guard}();
 """
 
+# Free-text search (q); skipped with a warning where the extension can not be created
+TRGM_DDL = """
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX IF NOT EXISTS admin_lifecycle_audit_event_search
+    ON {event} USING gin (search_text gin_trgm_ops);
+"""
+
 CSV_COLUMNS = COLUMNS
 CSV_UNSAFE_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
@@ -162,14 +171,21 @@ def partition_names(connection, schema):
 
 
 def ensure_partitions(connection, schema, from_month, to_month):
-    """ Create the monthly partitions in [from_month, to_month]; bounds are UTC; commits """
+    """ Create the missing monthly partitions in [from_month, to_month]; bounds are UTC; commits
+
+    Existing partitions are left alone, so the daily run takes no lock on live tables.
+    """
     created = []
     current = tuple(from_month)
+    existing = set(partition_names(connection, schema))
     with connection.cursor() as cursor:
         while current <= tuple(to_month):
             start = datetime.datetime(current[0], current[1], 1, tzinfo=UTC)
             end = datetime.datetime(*next_month(*current), 1, tzinfo=UTC)
             name = partition_name(*current)
+            if name in existing:
+                current = next_month(*current)
+                continue
             cursor.execute(sql.SQL(
                 "CREATE TABLE IF NOT EXISTS {child} PARTITION OF {parent} FOR VALUES FROM (%s) TO (%s)"
             ).format(child=_ident(schema, name), parent=_ident(schema, EVENT_TABLE)), (start, end))
@@ -184,9 +200,29 @@ def ensure_partitions(connection, schema, from_month, to_month):
     return created
 
 
-def ensure_schema(connection, schema, today=None, ahead_months=2):
-    """ Tables, indexes, append-only triggers, coverage date and partitions; idempotent; commits """
+def schema_ready(connection, schema):
+    """ Whether ensure_schema() has run: a catalog read, no lock """
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT to_regclass(%s), to_regclass(%s)", (
+            f'"{schema}"."{EVENT_TABLE}"', f'"{schema}"."{INBOX_TABLE}"',
+        ))
+        ready = all(value is not None for value in cursor.fetchone())
+    connection.commit()
+    return ready
+
+
+def ensure_lookahead(connection, schema, today=None, ahead_months=2):
+    """ Current and next ahead_months partitions (daily cron) """
     today = today or datetime.datetime.now(UTC).date()
+    current = (today.year, today.month)
+    return ensure_partitions(connection, schema, current, add_months(*current, max(int(ahead_months), 0)))
+
+
+def ensure_schema(connection, schema, today=None, ahead_months=2, log=None):
+    """ Tables, indexes, append-only triggers, coverage date and partitions; idempotent; commits
+
+    Admin task only: it replaces triggers, which locks the event table.
+    """
     with connection.cursor() as cursor:
         cursor.execute(sql.SQL(DDL).format(
             event=_ident(schema, EVENT_TABLE),
@@ -195,8 +231,15 @@ def ensure_schema(connection, schema, today=None, ahead_months=2):
             guard=_ident(schema, GUARD_FUNCTION),
         ))
     connection.commit()
-    current = (today.year, today.month)
-    return ensure_partitions(connection, schema, current, add_months(*current, max(int(ahead_months), 0)))
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(sql.SQL(TRGM_DDL).format(event=_ident(schema, EVENT_TABLE)))
+        connection.commit()
+    except Exception:  # pylint: disable=W0703
+        connection.rollback()
+        if log is not None:
+            log.warning("pg_trgm is not available: free-text search runs without an index")
+    return ensure_lookahead(connection, schema, today=today, ahead_months=ahead_months)
 
 
 def coverage_since(connection, schema):
@@ -292,20 +335,12 @@ def _row_values(event):
 
 
 def _inboxes(connection, schema, auth_schema):
-    """ Own inbox plus auth_core's; auth_schema None finds it in whichever schema auth_core created it """
+    """ Own inbox plus auth_core's in the configured auth_schema, when it exists """
     tables = [_ident(schema, INBOX_TABLE)]
     with connection.cursor() as cursor:
-        if auth_schema:
-            cursor.execute("SELECT to_regclass(%s)", (f'"{auth_schema}"."{AUTH_INBOX_TABLE}"',))
-            if cursor.fetchone()[0] is not None:
-                tables.append(_ident(auth_schema, AUTH_INBOX_TABLE))
-        else:
-            cursor.execute(
-                "SELECT n.nspname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace"
-                " WHERE c.relname = %s AND c.relkind IN ('r', 'p') ORDER BY n.nspname",
-                (AUTH_INBOX_TABLE,),
-            )
-            tables += [_ident(row[0], AUTH_INBOX_TABLE) for row in cursor.fetchall()]
+        cursor.execute("SELECT to_regclass(%s)", (f'"{auth_schema}"."{AUTH_INBOX_TABLE}"',))
+        if cursor.fetchone()[0] is not None:
+            tables.append(_ident(auth_schema, AUTH_INBOX_TABLE))
     connection.commit()
     return tables
 
@@ -341,13 +376,10 @@ def _with_project(payload, names):
     name = names.get(payload.get("project_id"))
     if payload.get("project_name") or name is None:
         return payload
-    return dict(
-        payload, project_name=name,
-        project_type=payload.get("project_type") or audit_events.project_type(name),
-    )
+    return dict(payload, project_name=name)
 
 
-def drain(connection, schema, auth_schema=None, batch_size=500, missing=None):
+def drain(connection, schema, auth_schema, batch_size=500, missing=None):
     """ Move inbox rows into the event table; returns how many inbox rows were moved
 
     Safe on several replicas (SKIP LOCKED). Rows of a month without a partition are left in place and
@@ -381,7 +413,7 @@ def drain(connection, schema, auth_schema=None, batch_size=500, missing=None):
                 names = _project_names(cursor, schema, [payload for _, _, payload in rows])
                 ready, values = [], []
                 for row_id, occurred_at, payload in rows:
-                    payload = _with_project(payload, names)
+                    payload = audit_events.normalize(_with_project(payload, names))
                     when = occurred_at.astimezone(UTC)
                     if (when.year, when.month) not in months:
                         if missing is not None:
@@ -428,7 +460,7 @@ def _where(params):  # pylint: disable=R0912
         if params.get(name):
             clauses.append(f"{name} ILIKE %s")
             args.append(_like(params[name]))
-    for name in ("project_type", "result", "source", "scope"):
+    for name in ("project_type", "result", "source"):
         if params.get(name):
             clauses.append(f"{name} = %s")
             args.append(params[name])
@@ -467,14 +499,23 @@ def _serialize(row):
     return result
 
 
-def query(connection, schema, params):
-    """ {rows, total, live_coverage_since} for one page """
+def query(connection, schema, params, count_cap=10000):
+    """ {rows, total, total_capped, live_coverage_since} for one page
+
+    The count stops at count_cap matches: past it the total is reported as a lower bound.
+    """
     where, args = _where(params)
     table = _ident(schema, EVENT_TABLE)
     columns = sql.SQL(", ").join(sql.Identifier(column) for column in COLUMNS)
     with connection.cursor(cursor_factory=extras.RealDictCursor) as cursor:
-        cursor.execute(sql.SQL("SELECT count(*) AS total FROM {}").format(table) + sql.SQL(where), args)
+        cursor.execute(
+            sql.SQL("SELECT count(*) AS total FROM (SELECT 1 FROM {}").format(table) + sql.SQL(where)
+            + sql.SQL(" LIMIT %s) AS matched"),
+            args + [count_cap + 1],
+        )
         total = cursor.fetchone()["total"]
+        capped = total > count_cap
+        total = min(total, count_cap)
         cursor.execute(
             sql.SQL("SELECT {} FROM {}").format(columns, table) + sql.SQL(where) + _order(params)
             + sql.SQL(" LIMIT %s OFFSET %s"),
@@ -486,6 +527,7 @@ def query(connection, schema, params):
     return {
         "rows": rows,
         "total": total,
+        "total_capped": capped,
         "live_coverage_since": since.astimezone(UTC).isoformat() if since else None,
     }
 

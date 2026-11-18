@@ -55,9 +55,19 @@ def test_auth_core_builder_uses_the_same_keys():
 ])
 def test_project_admin_access(before, after, expected):
     event = la.events.build("project.member_role_changed", la.events.SYSTEM_CTX, "project",
-                            roles_before=before, roles_after=after,
-                            admin_roles=la.events.PROJECT_ADMIN_ROLES)
+                            roles_before=before, roles_after=after)
     assert event["admin_access"] == expected
+
+
+def test_auth_core_payload_is_normalized_once_on_drain():
+    """auth_core writes raw facts; admin access, scrubbing and project type come from normalize()"""
+    raw = {"event_type": "user.platform_role_changed", "scope": "platform", "actor_type": "user",
+           "actor_id": 7, "roles_before": ["viewer"], "roles_after": ["super_admin"], "admin_access": None,
+           "project_name": "project_user_3", "details": {"mode": "administration", "api_token": "x"}}
+    event = la.events.normalize(raw)
+    assert event["admin_access"] == "granted"
+    assert event["details"] == {"mode": "administration"}
+    assert event["project_type"] == "private"
 
 
 def test_secret_shaped_keys_are_dropped_at_any_depth():

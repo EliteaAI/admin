@@ -35,11 +35,13 @@ SORT_COLUMNS = {
 }
 
 TEXT_FILTERS = ("project_name", "user_name", "user_email")
-EXACT_FILTERS = ("project_type", "result", "source", "scope")
+EXACT_FILTERS = ("project_type", "result", "source")
 ADMIN_ACCESS = ("granted", "revoked", "any")
 
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 500
+# Deeper pages are reached by narrowing the date range or filters, not by offset
+MAX_OFFSET = 10000
 
 
 def _truthy(value):
@@ -123,4 +125,6 @@ def parse(params):  # pylint: disable=R0912
     limit = _int(params.get("limit", DEFAULT_LIMIT), "limit")
     result["limit"] = max(1, min(limit, MAX_LIMIT))
     result["offset"] = max(0, _int(params.get("offset", 0), "offset"))
+    if result["offset"] > MAX_OFFSET:
+        raise ValueError(f"offset must be at most {MAX_OFFSET}; narrow the date range or filters")
     return result

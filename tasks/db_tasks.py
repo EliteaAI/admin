@@ -300,3 +300,22 @@ def propose_migrations(*args, **kwargs):  # pylint: disable=R0914
         #
         end_ts = time.time()
         log.info("Exiting (duration = %s)", end_ts - start_ts)
+
+
+def lifecycle_audit_provision(*args, **kwargs):
+    """Create the lifecycle audit tables, indexes, triggers and partitions (#7504). Idempotent. No params."""
+    #
+    with make_logger() as log:
+        log.info("Starting")
+        start_ts = time.time()
+        #
+        try:
+            from tools import this  # pylint: disable=C0415,E0401
+            #
+            created = this.for_module("admin").module.lifecycle_audit_provision(task_log=log)
+            log.info("Partitions ensured: %s", created)
+        except:  # pylint: disable=W0702
+            log.exception("Got exception, stopping")
+        #
+        end_ts = time.time()
+        log.info("Exiting (duration = %s)", end_ts - start_ts)

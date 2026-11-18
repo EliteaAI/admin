@@ -30,7 +30,7 @@ from ..utils import lifecycle_audit as la
 
 DEFAULTS = {
     "enabled": True,
-    # None finds auth_core's inbox by name (its schema follows pylon_auth's search_path)
+    # Schema of auth_core's inbox; None is pylon_main's own schema
     "auth_schema": None,
     "drain_interval_seconds": 2,
     "drain_batch_size": 500,
@@ -62,16 +62,21 @@ class Method:  # pylint: disable=E1101,R0903
 
     @web.init()
     def _lifecycle_audit_init(self):
-        self.lifecycle_audit_config = dict(DEFAULTS, **(self.descriptor.config.get("lifecycle_audit") or {}))
+        config = dict(DEFAULTS, **(self.descriptor.config.get("lifecycle_audit") or {}))
+        config["auth_schema"] = config["auth_schema"] or c.POSTGRES_SCHEMA
+        self.lifecycle_audit_config = config
         self.lifecycle_audit_stop = threading.Event()
         self.lifecycle_audit_thread = None
         self.lifecycle_audit_last_repair = 0.0
-        if not self.lifecycle_audit_config["enabled"]:
+        if not config["enabled"]:
             return
+        # No DDL here: tables come from the lifecycle_audit_provision admin task
         try:
-            self.lifecycle_audit_ensure_partitions()
+            with _raw_connection() as connection:
+                if not la.store.schema_ready(connection, c.POSTGRES_SCHEMA):
+                    log.warning("Lifecycle audit tables are missing; run the lifecycle_audit_provision admin task")
         except Exception:  # pylint: disable=W0703
-            log.exception("Lifecycle audit: provisioning failed; events wait in their inboxes")
+            log.exception("Lifecycle audit: schema check failed")
         #
         self.lifecycle_audit_thread = threading.Thread(
             target=self._lifecycle_audit_drain_loop, name="lifecycle-audit-drainer", daemon=True,
@@ -94,10 +99,10 @@ class Method:  # pylint: disable=E1101,R0903
 
         Never raises: an audit outage must not block the change (AC-23).
         """
-        if not self.lifecycle_audit_config["enabled"]:
-            return
-        events = events if isinstance(events, list) else [events]
         try:
+            if not getattr(self, "lifecycle_audit_config", DEFAULTS)["enabled"]:
+                return
+            events = events if isinstance(events, list) else [events]
             recorded = la.store.record(_dbapi_connection(session), c.POSTGRES_SCHEMA, events)
         except Exception:  # pylint: disable=W0703
             log.exception("Lifecycle audit write failed; applying the change without its audit event")
@@ -145,13 +150,23 @@ class Method:  # pylint: disable=E1101,R0903
 
     @web.method()
     def lifecycle_audit_ensure_partitions(self):
-        """ Tables, triggers and the current + lookahead months (daily cron, ready, self-heal) """
+        """ Missing current + lookahead months only (daily cron); nothing before provisioning """
         with _raw_connection() as connection:
-            created = la.store.ensure_schema(
+            if not la.store.schema_ready(connection, c.POSTGRES_SCHEMA):
+                return []
+            return la.store.ensure_lookahead(
                 connection, c.POSTGRES_SCHEMA,
                 ahead_months=self.lifecycle_audit_config["partition_ahead_months"],
             )
-        return created
+
+    @web.method()
+    def lifecycle_audit_provision(self, task_log=None):
+        """ Tables, indexes, triggers and partitions (lifecycle_audit_provision admin task) """
+        with _raw_connection() as connection:
+            return la.store.ensure_schema(
+                connection, c.POSTGRES_SCHEMA,
+                ahead_months=self.lifecycle_audit_config["partition_ahead_months"], log=task_log or log,
+            )
 
     @web.rpc("admin_lifecycle_audit_apply_retention")
     def _lifecycle_audit_apply_retention_rpc(self, **kwargs):
@@ -182,6 +197,8 @@ class Method:  # pylint: disable=E1101,R0903
         config = self.lifecycle_audit_config
         missing = set()
         with _raw_connection() as connection:
+            if not la.store.schema_ready(connection, c.POSTGRES_SCHEMA):
+                return 0
             moved = la.store.drain(
                 connection, c.POSTGRES_SCHEMA, config["auth_schema"],
                 batch_size=config["drain_batch_size"], missing=missing,
