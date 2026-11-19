@@ -26,11 +26,13 @@ class FakeAuth:
     def add_project_user_role(self, project_id, user_id, role_id, audit_ctx=None):
         self.roles.setdefault((project_id, user_id), set()).add(role_id)
 
-    def update_project_user_roles(self, project_id, user_id, role_ids, audit_ctx=None):
+    def update_project_user_roles(self, project_id, user_id, role_ids, audit_ctx=None, return_removed=False):
+        had_roles = bool(self.roles.get((project_id, user_id)))
         if role_ids:
             self.roles[(project_id, user_id)] = set(role_ids)
         else:
             self.roles.pop((project_id, user_id), None)
+        return had_roles if return_removed else True
 
     def list_project_roles(self, project_id):
         return [{"id": i, "name": n} for n, i in self.role_ids.items()]
@@ -116,11 +118,38 @@ def test_removing_a_manual_member_is_allowed(rpc):
     assert (PROTECTED, 9) not in fake_auth.roles
 
 
-@pytest.mark.parametrize("flag", ["scim_sync", "system_cleanup"])
-def test_sync_and_user_cleanup_may_remove_synced_members(rpc, flag):
+def test_manual_removal_returns_only_memberships_that_were_removed(rpc):
     instance, fake_auth = rpc
-    instance.remove_users_from_project(PROTECTED, [5], **{flag: True})
+    instance.add_user_to_project(3, 9, ["viewer"])
+    events = []
+    instance.context.event_manager.fire_event = lambda *event: events.append(event)
+
+    removed_ids = instance.remove_users_from_project(3, [9, 9, 404], return_removed_ids=True)
+
+    assert removed_ids == [9]
+    assert fake_auth.roles.get((3, 9)) is None
+    assert events == [
+        ("user_removed_from_project", {"project_id": 3, "user_ids": [9, 404]})
+    ]
+
+
+@pytest.mark.parametrize("flag", ["scim_sync", "system_cleanup"])
+def test_sync_and_user_cleanup_can_use_older_auth_core(rpc, monkeypatch, flag):
+    instance, fake_auth = rpc
+    update_roles = fake_auth.update_project_user_roles
+    events = []
+    instance.context.event_manager.fire_event = lambda *event: events.append(event)
+
+    def legacy_update_roles(project_id, user_id, role_ids, audit_ctx=None):
+        assert audit_ctx == {"actor_type": "system", "source": "system"}
+        return update_roles(project_id, user_id, role_ids)
+
+    monkeypatch.setattr(fake_auth, "update_project_user_roles", legacy_update_roles)
+    assert instance.remove_users_from_project(PROTECTED, [5], **{flag: True}) is True
     assert (PROTECTED, 5) not in fake_auth.roles
+    assert events == [
+        ("user_removed_from_project", {"project_id": PROTECTED, "user_ids": [5]})
+    ]
 
 
 def test_role_change_of_synced_member_is_allowed(rpc):

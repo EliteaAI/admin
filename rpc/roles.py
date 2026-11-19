@@ -148,15 +148,22 @@ class RPC:
 
     @web.rpc("admin_remove_users_from_project", "remove_users_from_project")
     def remove_users_from_project(self, project_id: int, user_ids: list[int], scim_sync: bool = False,
-                                  system_cleanup: bool = False, audit_ctx=None, **kwargs) -> bool:
+                                  system_cleanup: bool = False, audit_ctx=None,
+                                  return_removed_ids: bool = False, **kwargs) -> bool | list[int]:
         """ scim_sync, system_cleanup (a platform task deleting the user): may remove members synced from SCIM """
+        user_ids = list(dict.fromkeys(user_ids))
         if not user_ids:
-            return True
+            return [] if return_removed_ids else True
         if not (scim_sync or system_cleanup):
             _refuse_removing_synced(self, project_id, user_ids)
         audit_ctx = _audit_ctx(self, audit_ctx)
+        removed_ids = []
         for user_id in user_ids:
-            auth.update_project_user_roles(project_id, user_id, [], audit_ctx=audit_ctx)
+            if return_removed_ids:
+                if auth.update_project_user_roles(project_id, user_id, [], audit_ctx=audit_ctx, return_removed=True):
+                    removed_ids.append(user_id)
+            else:
+                auth.update_project_user_roles(project_id, user_id, [], audit_ctx=audit_ctx)
         # Fired here rather than at each call site: the user-deletion cascade tasks reach
         # this RPC directly, and subscribers' per-project cleanup must run for them too.
         log.info("[admin_roles] firing user_removed_from_project project_id=%s user_ids=%s", project_id, user_ids)
@@ -164,7 +171,7 @@ class RPC:
             "user_removed_from_project",
             {'project_id': project_id, 'user_ids': list(user_ids)},
         )
-        return True
+        return removed_ids if return_removed_ids else True
 
     @web.rpc("admin_get_permissions_in_project", "get_permissions_in_project")
     def get_permissions_in_project(self, project_id: int, user_id: int, **kwargs) -> set[str]:
