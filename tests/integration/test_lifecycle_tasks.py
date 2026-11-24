@@ -284,6 +284,16 @@ class TestParseParam:
         with pytest.raises(ValueError):
             lifecycle_tasks.parse_param("{not valid json}")
 
+    def test_comma_form_keeps_a_semicolon_inside_a_value(self, lifecycle_tasks):
+        result = lifecycle_tasks.parse_param("scope=team_projects,project_ids=12,dry_run=false,reason=cleanup; see ticket")
+        assert result == {
+            "scope": "team_projects", "project_ids": "12", "dry_run": "false", "reason": "cleanup; see ticket",
+        }
+
+    def test_comma_form_trailing_semicolon_does_not_swallow_a_pair(self, lifecycle_tasks):
+        result = lifecycle_tasks.parse_param("project_id=5,dry_run=false;")
+        assert result == {"project_id": "5", "dry_run": "false;"}
+
 
 class TestToList:
     def test_none_returns_empty(self, lifecycle_tasks):
