@@ -89,13 +89,24 @@ def _to_int_list(value, field_name):
     return [_to_int(item, field_name) for item in _to_list(value)]
 
 
+def _reject_duplicate_keys(pairs):
+    """ Build the param dict from JSON object pairs, refusing a repeated key """
+    parsed = {}
+    for key, value in pairs:
+        if key in parsed:
+            raise ValueError(f"Duplicate param '{key}'")
+        parsed[key] = value
+    return parsed
+
+
 def parse_param(param):
     """
         Parse the task 'param' field into a dict of task parameters.
 
         Accepts a JSON object string (preferred, matches the task's
         documented examples), or falls back to a simple
-        'key=value,key=value' string for quick manual runs.
+        'key=value,key=value' or 'key=value;key=value' string for
+        quick manual runs.
     """
     param = (param or "").strip()
     if not param:
@@ -103,18 +114,21 @@ def parse_param(param):
     #
     if param.startswith("{"):
         try:
-            return json.loads(param)
+            return json.loads(param, object_pairs_hook=_reject_duplicate_keys)
         except json.JSONDecodeError as exc:
             raise ValueError(f"Invalid JSON in param: {exc}") from exc
     #
-    parsed = {}
-    for pair in param.split(","):
-        pair = pair.strip()
-        if not pair or "=" not in pair:
+    separator = ";" if ";" in param else ","
+    pairs = []
+    for fragment in param.split(separator):
+        fragment = fragment.strip()
+        if not fragment:
             continue
-        key, _, value = pair.partition("=")
-        parsed[key.strip()] = value.strip()
-    return parsed
+        if "=" not in fragment:
+            raise ValueError(f"Malformed param fragment '{fragment}'; expected key=value")
+        key, _, value = fragment.partition("=")
+        pairs.append((key.strip(), value.strip()))
+    return _reject_duplicate_keys(pairs)
 
 
 def is_personal_project(project):

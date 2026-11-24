@@ -284,6 +284,42 @@ class TestParseParam:
         with pytest.raises(ValueError):
             lifecycle_tasks.parse_param("{not valid json}")
 
+    def test_semicolon_separates_pairs(self, lifecycle_tasks):
+        result = lifecycle_tasks.parse_param("project_id=14002; dry_run=false;")
+        assert result == {"project_id": "14002", "dry_run": "false"}
+
+    def test_comma_inside_a_semicolon_param_stays_in_the_value(self, lifecycle_tasks):
+        result = lifecycle_tasks.parse_param("project_ids=1,2;dry_run=false")
+        assert result == {"project_ids": "1,2", "dry_run": "false"}
+
+    def test_trailing_comma_is_ignored(self, lifecycle_tasks):
+        assert lifecycle_tasks.parse_param("scope=team_projects,") == {"scope": "team_projects"}
+
+    @pytest.mark.parametrize("param", [
+        "project_id14002;dry_run=false",
+        "scope=team_projects,dry_run",
+        "dry_run",
+        "[1]",
+        "14002",
+    ])
+    def test_fragment_without_equals_raises(self, lifecycle_tasks, param):
+        with pytest.raises(ValueError, match="Malformed param fragment"):
+            lifecycle_tasks.parse_param(param)
+
+    def test_comma_form_reason_containing_semicolon_raises(self, lifecycle_tasks):
+        with pytest.raises(ValueError, match="Malformed param fragment 'see ticket'"):
+            lifecycle_tasks.parse_param("scope=team_projects,dry_run=false,reason=cleanup; see ticket")
+
+    @pytest.mark.parametrize("param", [
+        "project_id=14002;dry_run=false;project_id=all",
+        "dry_run=true,dry_run=false",
+        '{"dry_run": true, "dry_run": false}',
+        '{"filter": {"a": 1, "a": 2}}',
+    ])
+    def test_duplicate_key_raises(self, lifecycle_tasks, param):
+        with pytest.raises(ValueError, match="Duplicate param"):
+            lifecycle_tasks.parse_param(param)
+
 
 class TestToList:
     def test_none_returns_empty(self, lifecycle_tasks):

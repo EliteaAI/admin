@@ -20,8 +20,13 @@
 import io
 import time
 
+from sqlalchemy.exc import NoReferencedTableError  # pylint: disable=E0401
+
+from plugins.admin.utils import schema_tables  # pylint: disable=E0401
+
 from tools import context  # pylint: disable=E0401
 
+from .lifecycle_tasks import parse_param
 from .logs import make_logger
 
 
@@ -72,8 +77,129 @@ def create_database(*args, **kwargs):
         log.info("Exiting (duration = %s)", end_ts - start_ts)
 
 
-def create_tables(*args, **kwargs):
-    """Apply DB schema migrations for shared tables and all successful projects. No params."""
+CREATE_TABLES_PARAMS = {"dry_run", "project_id"}
+ALL_PROJECTS = "all"
+
+
+def _parse_dry_run(params):
+    """ dry_run of create_tables: absent means true, only an explicit true/false is accepted """
+    if "dry_run" not in params:
+        return True
+    value = params["dry_run"]
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() in ("true", "false"):
+        return value.strip().lower() == "true"
+    raise ValueError(f"Invalid dry_run value {value!r}; expected true or false")
+
+
+def _parse_project_id(params):
+    """ project_id of create_tables: absent means all, otherwise 'all' or a positive integer """
+    if "project_id" not in params:
+        return ALL_PROJECTS
+    value = params["project_id"]
+    if isinstance(value, str):
+        text = value.strip()
+        if text.lower() == ALL_PROJECTS:
+            return ALL_PROJECTS
+        if text.isascii() and text.isdigit() and int(text) > 0:
+            return int(text)
+    elif isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    raise ValueError(
+        f"Invalid project_id value {value!r}; expected a positive integer project id or 'all'"
+    )
+
+
+def _fetch_provisioned_project(project_id):
+    """ The single project a scoped run targets; refuses a missing or unprovisioned one """
+    project = context.rpc_manager.timeout(120).project_list(project_id=project_id)
+    if project is None:
+        raise ValueError(f"Project {project_id} not found")
+    if project.get("create_success") is not True:
+        raise ValueError(
+            f"Project {project_id} was not provisioned successfully; use create_tables_for_failed"
+        )
+    return project
+
+
+def _format_table_names(tables):
+    return "[" + ", ".join(table.name for table in tables) + "]"
+
+
+def _format_outside_objects(outside):
+    return ", ".join(f"{kind} {name} (\u2192 {schema})" for kind, name, schema in outside)
+
+
+def _process_shared_schema(log, db, dry_run, is_shared_apply_allowed):
+    """ Report the missing shared tables, creating them only in an all-projects apply """
+    with db.get_session() as shared_db:
+        connection = shared_db.connection()
+        shared_metadata = db.get_shared_metadata()
+        planned = schema_tables.plan_missing_tables(connection, shared_metadata)
+        names = ", ".join(table.name for table in planned)
+        if not planned:
+            log.info("shared: up to date")
+            return len(planned), 0
+        if not is_shared_apply_allowed:
+            log.info(
+                "shared: not applied in single-project mode (%s pending: %s); run with project_id=all",
+                len(planned), names,
+            )
+            return len(planned), 0
+        if dry_run:
+            log.info("shared: would create [%s]", names)
+            return len(planned), 0
+        shared_metadata.create_all(bind=connection, tables=planned)
+        shared_db.commit()
+        log.info("shared: created [%s]", names)
+        return len(planned), len(planned)
+
+
+def _process_project_schema(log, db, project_id, tenant_metadata, dry_run, is_single_project):  # pylint: disable=R0913,R0917
+    """ Plan one project's missing tables and create them unless dry run; returns the outcome name """
+    with db.get_session(project_id) as tenant_db:
+        connection = tenant_db.connection()
+        planned = schema_tables.plan_missing_tables(connection, tenant_metadata)
+        if not planned:
+            return "up_to_date"
+        outside = schema_tables.find_ddl_outside_schema(
+            connection, tenant_metadata, planned,
+            db.schema_mapper(project_id),
+        )
+        if outside and is_single_project:
+            log.error(
+                "project %s: needs a shared-schema change first: %s; run with project_id=all; "
+                "not created: %s",
+                project_id, _format_outside_objects(outside), _format_table_names(planned),
+            )
+            return "stopped"
+        if dry_run:
+            log.info("project %s: would create %s", project_id, _format_table_names(planned))
+            if outside:
+                log.info("project %s: would also create %s", project_id, _format_outside_objects(outside))
+            return "planned"
+        tenant_metadata.create_all(bind=connection, tables=planned)
+        tenant_db.commit()
+        log.info("project %s: created %s", project_id, _format_table_names(planned))
+        if outside:
+            log.info("project %s: also created %s", project_id, _format_outside_objects(outside))
+        return "applied"
+
+
+def _try_process_project_schema(log, db, project_id, tenant_metadata, dry_run, is_single_project):  # pylint: disable=R0913,R0917
+    """ One project's pass, with its failure logged so the other projects still run """
+    try:
+        return _process_project_schema(log, db, project_id, tenant_metadata, dry_run, is_single_project)
+    except NoReferencedTableError as exc:
+        log.error("project %s: failed: model defect: %s", project_id, exc)
+    except Exception as exc:  # pylint: disable=W0703
+        log.error("project %s: failed: %s: %s", project_id, type(exc).__name__, exc)
+    return "failed"
+
+
+def create_tables(*args, **kwargs):  # pylint: disable=R0914,R0915
+    """Preview or apply database schema migrations for one project or all eligible projects. Dry run is enabled by default. Review the results before setting dry_run=false. Shared-table migrations are included only when targeting all projects. Param: 'project_id=<id>|all;dry_run=true|false' or the same as JSON; both optional (defaults all, true)."""
     #
     with make_logger() as log:
         log.info("Starting")
@@ -82,32 +208,86 @@ def create_tables(*args, **kwargs):
         try:
             from tools import db  # pylint: disable=C0415,E0401
             #
-            log.info("Getting shared metadata")
-            shared_metadata = db.get_shared_metadata()
+            params = parse_param(kwargs.get("param"))
+            unknown_params = set(params) - CREATE_TABLES_PARAMS
+            if unknown_params:
+                raise ValueError(
+                    f"Unknown param(s): {sorted(unknown_params)}; allowed: {sorted(CREATE_TABLES_PARAMS)}"
+                )
+            dry_run = _parse_dry_run(params)
+            requested_project = _parse_project_id(params)
+            is_single_project = requested_project != ALL_PROJECTS
             #
-            log.info("Applying shared metadata")
-            with db.get_session(None) as shared_db:
-                shared_metadata.create_all(bind=shared_db.connection())
-                shared_db.commit()
+            if is_single_project:
+                project_ids = [_fetch_provisioned_project(requested_project)["id"]]
+                scope = f"project {project_ids[0]}"
+            else:
+                project_ids = [
+                    project["id"]
+                    for project in context.rpc_manager.timeout(120).project_list(
+                        filter_={"create_success": True},
+                    )
+                ]
+                scope = f"all ({len(project_ids)} eligible projects)"
             #
-            log.info("Getting project metadata")
-            tenant_metadata = db.get_tenant_specific_metadata()
-            #
-            log.info("Getting project list")
-            project_list = context.rpc_manager.timeout(120).project_list(
-                filter_={"create_success": True},
+            log.info(
+                "create_tables: scope=%s; mode=%s; requested_by=%s",
+                scope, "DRY RUN" if dry_run else "APPLY", kwargs.get("_executing_user_id"),
             )
             #
-            for project in project_list:
-                log.info("Applying project metadata: %s", project)
-                with db.get_session(project["id"]) as tenant_db:
-                    tenant_metadata.create_all(bind=tenant_db.connection())
-                    tenant_db.commit()
+            outcomes = {
+                name: [] for name in ("planned", "applied", "up_to_date", "skipped", "stopped", "failed")
+            }
+            shared_planned, shared_applied = 0, 0
+            has_shared_pass_failed = False
+            try:
+                shared_planned, shared_applied = _process_shared_schema(
+                    log, db, dry_run, is_shared_apply_allowed=not is_single_project,
+                )
+            except Exception as exc:  # pylint: disable=W0703
+                if is_single_project:
+                    raise
+                has_shared_pass_failed = True
+                log.error("shared: failed: %s: %s", type(exc).__name__, exc)
+                log.error("projects: %s skipped (shared pass failed)", len(project_ids))
+                outcomes["skipped"] = list(project_ids)
+            #
+            if not has_shared_pass_failed:
+                tenant_metadata = db.get_tenant_specific_metadata()
+                for project_id in project_ids:
+                    outcome = _try_process_project_schema(
+                        log, db, project_id, tenant_metadata, dry_run, is_single_project,
+                    )
+                    outcomes[outcome].append(project_id)
+            #
+            log.info(
+                "Done: projects planned=%s applied=%s up_to_date=%s skipped=%s stopped=%s failed=%s; "
+                "shared planned=%s applied=%s",
+                len(outcomes["planned"]) + len(outcomes["applied"]), len(outcomes["applied"]),
+                len(outcomes["up_to_date"]), len(outcomes["skipped"]),
+                len(outcomes["stopped"]), len(outcomes["failed"]),
+                shared_planned, shared_applied,
+            )
+            if dry_run:
+                log.info("Dry run: nothing written; re-run with dry_run=false to apply")
+            #
+            if has_shared_pass_failed:
+                raise RuntimeError("create_tables: shared pass failed; no project was processed")
+            problems = [
+                f"{len(outcomes[outcome])} project(s) {wording}: {outcomes[outcome]}"
+                for outcome, wording in (
+                    ("failed", "failed"),
+                    ("stopped", "need a shared-schema change first"),
+                )
+                if outcomes[outcome]
+            ]
+            if problems:
+                raise RuntimeError("create_tables: " + "; ".join(problems))
         except:  # pylint: disable=W0702
-            log.exception("Got exception, stopping")
-        #
-        end_ts = time.time()
-        log.info("Exiting (duration = %s)", end_ts - start_ts)
+            log.exception("Got exception, stopping task")
+            raise
+        finally:
+            log.info("Exiting (duration = %s)", time.time() - start_ts)
 
 
 def create_tables_for_failed(*args, **kwargs):
