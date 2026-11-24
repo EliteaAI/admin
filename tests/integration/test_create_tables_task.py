@@ -224,6 +224,8 @@ def run(db_tasks):
     ("project_id=14002;dry_run=false;project_id=all", "Duplicate param 'project_id'"),
     ('{"project_id": 14002, "dry_run": false, "project_id": "all"}', "Duplicate param 'project_id'"),
     ("dry_run", "Malformed param fragment 'dry_run'"),
+    ('{"dry_run": true, "dry_run": false}', "Duplicate param 'dry_run'"),
+    ("project_id=5,dry_run=false", "Invalid project_id value '5,dry_run=false'"),
 ])
 def test_invalid_param_fails_before_any_lookup_or_session(run, param, message):
     db = SpyDb()
@@ -271,6 +273,8 @@ def test_shared_pass_failure_skips_every_project_and_fails_the_task(run):
     assert "skipped=2" in log.text
     assert db.sessions == [None]
     assert isinstance(error, RuntimeError)
+    assert str(error) == "create_tables: shared pass failed; no project was processed"
+    assert "Got exception" not in log.text
 
 
 # --- planner, guard and apply on real PostgreSQL ---
@@ -375,6 +379,7 @@ def test_single_project_apply_creates_only_that_projects_table(run, engine):
     assert "project 1: created [beta]" in log.text
     assert "planned=1 applied=1" in log.text
     assert "Dry run" not in log.text
+    assert "dry_run not given" not in log.text
     assert db.sessions == [None, 1]
     assert list_tables(engine, "p_1") == ["alpha", "beta"]
     assert list_tables(engine, "p_2") == ["alpha"]
@@ -410,6 +415,7 @@ def test_empty_param_previews_shared_and_all_eligible_projects(run, engine):
 
     assert error is None
     assert "create_tables: scope=all (2 eligible projects); mode=DRY RUN" in log.text
+    assert "dry_run not given: previewing only, nothing will be written; pass dry_run=false to apply" in log.text
     assert "shared: would create [shared_a]" in log.text
     assert "project 1: would create [beta]" in log.text
     assert "project 2" not in log.text
@@ -459,6 +465,7 @@ def test_one_failing_project_does_not_stop_the_others_and_fails_the_task(run, en
     assert "planned=2 applied=2 up_to_date=0 skipped=0 stopped=0 failed=1" in log.text
     assert isinstance(error, RuntimeError)
     assert str(error) == "create_tables: 1 project(s) failed: [2]"
+    assert "Got exception" not in log.text
     assert list_tables(engine, "p_3") == ["alpha", "beta"]
 
 
@@ -636,3 +643,17 @@ def test_objects_that_stay_inside_the_project_schema_pass_the_guard_and_are_appl
     assert list_types_and_sequences(engine) == ["p_1.own_kind"]
     assert sa.inspect(engine).get_foreign_keys("cycle_a", schema="p_1")[0]["name"] == "fk_a_b"
     assert list_tables(engine, "p_2") == []
+
+
+@needs_postgres
+def test_raw_ddl_listener_is_left_to_its_tables_own_create(run, engine):
+    shared, _ = build_plain_tables()
+    tenant = sa.MetaData(schema=TENANT)
+    listened = sa.Table("listened", tenant, sa.Column("id", sa.Integer, primary_key=True))
+    sa.event.listen(listened, "after_create", sa.DDL("SELECT 1"))
+
+    log, error, _ = run("project_id=1;dry_run=false", PostgresDb(engine, shared, tenant), projects=[make_project(1)])
+
+    assert error is None, log.text
+    assert "project 1: created [listened]" in log.text
+    assert list_tables(engine, "p_1") == ["listened"]

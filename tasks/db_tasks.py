@@ -18,6 +18,7 @@
 """ Task """
 
 import io
+import json
 import time
 
 from sqlalchemy.exc import NoReferencedTableError  # pylint: disable=E0401
@@ -26,7 +27,6 @@ from plugins.admin.utils import schema_tables  # pylint: disable=E0401
 
 from tools import context  # pylint: disable=E0401
 
-from .lifecycle_tasks import parse_param
 from .logs import make_logger
 
 
@@ -79,6 +79,38 @@ def create_database(*args, **kwargs):
 
 CREATE_TABLES_PARAMS = {"dry_run", "project_id"}
 ALL_PROJECTS = "all"
+
+
+def _reject_duplicate_keys(pairs):
+    """ Build the param dict from key/value pairs, refusing a repeated key """
+    parsed = {}
+    for key, value in pairs:
+        if key in parsed:
+            raise ValueError(f"Duplicate param '{key}'")
+        parsed[key] = value
+    return parsed
+
+
+def _parse_create_tables_param(param):
+    """ create_tables param: a JSON object or 'key=value;key=value'; a malformed fragment or repeated key is refused """
+    param = (param or "").strip()
+    if not param:
+        return {}
+    if param.startswith("{"):
+        try:
+            return json.loads(param, object_pairs_hook=_reject_duplicate_keys)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid JSON in param: {exc}") from exc
+    pairs = []
+    for fragment in param.split(";"):
+        fragment = fragment.strip()
+        if not fragment:
+            continue
+        if "=" not in fragment:
+            raise ValueError(f"Malformed param fragment '{fragment}'; expected key=value")
+        key, _, value = fragment.partition("=")
+        pairs.append((key.strip(), value.strip()))
+    return _reject_duplicate_keys(pairs)
 
 
 def _parse_dry_run(params):
@@ -208,7 +240,7 @@ def create_tables(*args, **kwargs):  # pylint: disable=R0914,R0915
         try:
             from tools import db  # pylint: disable=C0415,E0401
             #
-            params = parse_param(kwargs.get("param"))
+            params = _parse_create_tables_param(kwargs.get("param"))
             unknown_params = set(params) - CREATE_TABLES_PARAMS
             if unknown_params:
                 raise ValueError(
@@ -234,6 +266,8 @@ def create_tables(*args, **kwargs):  # pylint: disable=R0914,R0915
                 "create_tables: scope=%s; mode=%s; requested_by=%s",
                 scope, "DRY RUN" if dry_run else "APPLY", kwargs.get("_executing_user_id"),
             )
+            if "dry_run" not in params:
+                log.warning("dry_run not given: previewing only, nothing will be written; pass dry_run=false to apply")
             #
             outcomes = {
                 name: [] for name in ("planned", "applied", "up_to_date", "skipped", "stopped", "failed")
@@ -271,8 +305,6 @@ def create_tables(*args, **kwargs):  # pylint: disable=R0914,R0915
             if dry_run:
                 log.info("Dry run: nothing written; re-run with dry_run=false to apply")
             #
-            if has_shared_pass_failed:
-                raise RuntimeError("create_tables: shared pass failed; no project was processed")
             problems = [
                 f"{len(outcomes[outcome])} project(s) {wording}: {outcomes[outcome]}"
                 for outcome, wording in (
@@ -281,13 +313,16 @@ def create_tables(*args, **kwargs):  # pylint: disable=R0914,R0915
                 )
                 if outcomes[outcome]
             ]
-            if problems:
-                raise RuntimeError("create_tables: " + "; ".join(problems))
+            if has_shared_pass_failed:
+                problems = ["shared pass failed; no project was processed"]
         except:  # pylint: disable=W0702
             log.exception("Got exception, stopping task")
             raise
         finally:
             log.info("Exiting (duration = %s)", time.time() - start_ts)
+        #
+        if problems:
+            raise RuntimeError("create_tables: " + "; ".join(problems))
 
 
 def create_tables_for_failed(*args, **kwargs):

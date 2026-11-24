@@ -56,6 +56,8 @@ def find_ddl_outside_schema(connection, metadata, planned, target_schema):
     """ (ddl kind, object name, schema) of each object the apply would create outside target_schema """
     outside = []
     for ddl in _capture_ddl(connection, metadata, planned):
+        if not hasattr(ddl, "element"):
+            continue
         target = getattr(ddl.element, "table", ddl.element)
         schema = connection.schema_for_object(target)
         landing_schema = schema or connection.dialect.default_schema_name
