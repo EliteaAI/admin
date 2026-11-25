@@ -103,13 +103,28 @@ SENSITIVE_KEY_PARTS = (
 )
 
 #
+# "sk-" style prefixes also end ordinary words ("task-management", "park_live_events"),
+# so one glued to a letter or digit counts only when a key-like run follows within
+# 64 characters: 8+ letters/digits holding a letter and either a digit or an inner
+# capital. Random keys have one, while hyphenated prose, versions such as "oauth2"
+# and dates do not; the bound keeps the scan linear. An escape such as \n starts a word.
+#
+GLUED_PREFIX_STARTS_KEY = (
+    r"(?=[A-Za-z0-9_-]{0,64}?(?<![A-Za-z0-9])(?=[A-Za-z0-9]{8})"
+    r"(?:(?=[0-9]*[A-Za-z])[0-9]|[A-Za-z][a-z]*[A-Z0-9]))"
+)
+
+#
 # Value patterns redacted regardless of the key they are stored under
 #
 SENSITIVE_VALUE_RE = re.compile(
     r"(ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|glpat-|xox[baprse]-|"
     r"AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|"
-    r"sk-[A-Za-z0-9_-]{16,}|sk_live_|rk_live_|"
-    r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})"
+    + "|".join(
+        r"{0}(?:(?<![A-Za-z0-9]{0})|(?<=\\[bfnrtuvxUX]{0})|{1}){2}".format(re.escape(prefix), GLUED_PREFIX_STARTS_KEY, tail)
+        for prefix, tail in (("sk-", r"[A-Za-z0-9_-]{16,}"), ("sk_live_", ""), ("rk_live_", ""))
+    )
+    + r"|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})"
 )
 PRIVATE_KEY_MARKER = "PRIVATE KEY-----"
 
