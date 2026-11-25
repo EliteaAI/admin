@@ -266,6 +266,43 @@ def test_skill_file_paths_that_look_like_secrets_survive_backup_and_restore(conn
     assert _manifest(connection, TARGET) == _manifest(connection, SOURCE)
 
 
+PROSE_INSTRUCTIONS = "Follow task-management-guidelines and the risk-assessment-framework.\n"
+
+
+def _set_instructions(connection, text):
+    with connection.cursor() as cursor:
+        cursor.execute("UPDATE {}.skill_versions SET instructions = %s".format(SOURCE), (text,))
+    connection.commit()
+
+
+def _instructions(connection, schema):
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT name, instructions FROM {}.skill_versions ORDER BY name".format(schema))
+        rows = cursor.fetchall()
+    connection.rollback()
+    return rows
+
+
+def test_skill_instructions_keep_their_prose_through_backup_and_restore(connection):
+    _set_instructions(connection, PROSE_INSTRUCTIONS)
+    _restore(connection, _backup_zip(connection, _source_storage()), FakeStorage())
+    assert _instructions(connection, TARGET) == [("base", PROSE_INSTRUCTIONS), ("v2", PROSE_INSTRUCTIONS)]
+
+
+def test_skill_instructions_with_a_token_are_redacted_in_the_backup(connection):
+    _set_instructions(connection, PROSE_INSTRUCTIONS + "Call the API with sk-proj-abcdefghijklmnop1234.\n")
+    _restore(connection, _backup_zip(connection, _source_storage()), FakeStorage())
+    assert _instructions(connection, TARGET) == [("base", pb.REDACTED), ("v2", pb.REDACTED)]
+
+
+def test_replace_restore_into_the_source_project_keeps_its_skill_instructions(connection):
+    _set_instructions(connection, PROSE_INSTRUCTIONS)
+    storage = _source_storage()
+    _restore(connection, _backup_zip(connection, storage), storage, target=SOURCE, target_id=SOURCE_ID,
+             truncate=True)
+    assert _instructions(connection, SOURCE) == [("base", PROSE_INSTRUCTIONS), ("v2", PROSE_INSTRUCTIONS)]
+
+
 def test_the_hash_list_and_the_dumped_rows_come_from_one_snapshot(database, connection):
     sfb.begin_backup_snapshot(connection, SOURCE_ID)
     with connection.cursor() as cursor:
