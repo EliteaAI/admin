@@ -81,16 +81,11 @@ def test_parse_types_rejects_empty_or_unknown(payload):
         pdd.parse_types(payload)
 
 
-# ---------- visible scope ----------
+# ---------- chat scope ----------
 
-def test_visible_chats_match_the_backup_scope():
-    """ The count shown and the chats deleted are the chats a backup carries (spec Q3 / Q4) """
-    assert pdd.visible_chat_ids_sql("p_3", 7) == cb.conversation_scope_sql("p_3", 7)
-
-
-def test_visible_chats_leave_other_users_private_chats_out():
-    sql = pdd.visible_chat_ids_sql("p_3", 7)
-    assert "not is_private or author_id = 7" in sql
+def test_project_chats_include_other_users_private_chats():
+    """ Bulk delete covers every chat of the project, not only the caller's (#7513) """
+    assert pdd.project_chat_ids_sql("p_3") == 'select id from "p_3".chat_conversations'
 
 
 # ---------- kinds ----------
