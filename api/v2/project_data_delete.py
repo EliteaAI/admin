@@ -80,8 +80,9 @@ def _project_schema(project_id):
     return pc["PROJECT_SCHEMA_TEMPLATE"].format(project_id)
 
 
-def _project_chat_ids(project_id):
-    """ Ids of all chats of the project, or None when the project schema is missing """
+def _project_chat_ids(project_id, user_id=None):
+    """ Ids of all chats of the project, or None when the project schema is missing.
+        With user_id: (ids, ids no backup of that user carries) """
     schema = _project_schema(project_id)
     connection = context.db.engine.raw_connection()
     try:
@@ -93,6 +94,9 @@ def _project_chat_ids(project_id):
                 return None
             cursor.execute(pdd.project_chat_ids_sql(schema))
             ids = [row[0] for row in cursor.fetchall()]
+            if user_id is not None:
+                cursor.execute(pdd.unrecoverable_chat_ids_sql(schema, user_id))
+                ids = (ids, [row[0] for row in cursor.fetchall()])
         connection.rollback()
         return ids
     finally:
@@ -184,7 +188,8 @@ class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
 
     @register_openapi(
         name="Project Data Delete Summary",
-        description="Number of items per type a bulk delete of project data would remove for the caller.",
+        description="Number of items per type a bulk delete of project data would remove: chats of all "
+                    "users, with the number of other users' private chats no backup of the caller can restore.",
         parameters=[
             {"name": "project_id", "in": "path", "schema": {"type": "integer"},
              "description": "Project ID."},
@@ -200,17 +205,22 @@ class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         if not _authorized(project_id):
             return _denied()
         #
+        user_id = auth.current_user().get("id")
         try:
-            chat_ids = _project_chat_ids(project_id)
+            chats = _project_chat_ids(project_id, user_id)
         except Exception:  # pylint: disable=W0703
             log.exception("project_data_delete: failed to count chats of project %s", project_id)
             return {"ok": False, "error": "failed to resolve project chats"}, 500
-        if chat_ids is None:
+        if chats is None:
             return {"ok": False, "error": "project schema not found"}, 404
+        chat_ids, unrecoverable_ids = chats
         #
         return {
             "ok": True,
-            "types": {pdd.TYPE_CHATS: {"count": len(chat_ids), "blocked": 0}, **_entity_counts(project_id)},
+            "types": {
+                pdd.TYPE_CHATS: {"count": len(chat_ids), "blocked": 0, "unrecoverable": len(unrecoverable_ids)},
+                **_entity_counts(project_id),
+            },
         }, 200
 
     @register_openapi(

@@ -84,8 +84,18 @@ def test_parse_types_rejects_empty_or_unknown(payload):
 # ---------- chat scope ----------
 
 def test_project_chats_include_other_users_private_chats():
-    """ Bulk delete covers every chat of the project, not only the caller's (#7513) """
-    assert pdd.project_chat_ids_sql("p_3") == 'select id from "p_3".chat_conversations'
+    """ Bulk delete covers every chat of the project, not only the caller's (#7513),
+        but only chat page conversations: not support threads or pipeline / agent runs """
+    assert pdd.project_chat_ids_sql("p_3") == (
+        'select id from "p_3".chat_conversations where source in (\'elitea\', \'alita\')'
+    )
+
+
+def test_unrecoverable_chats_are_other_users_private_chats():
+    """ The complement of the backup scope within the deleted chats """
+    assert pdd.unrecoverable_chat_ids_sql("p_3", 7) == (
+        pdd.project_chat_ids_sql("p_3") + " and is_private and author_id <> 7"
+    )
 
 
 # ---------- kinds ----------
