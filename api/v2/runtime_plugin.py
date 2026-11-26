@@ -78,7 +78,7 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
 
     @register_openapi(
         name="Update Plugin on Pylons",
-        description="Request a plugin update on specified pylons.",
+        description="Request a plugin update on specified pylons. Unchanged plugins are skipped unless force=true (redownload).",
         parameters=[
             {"name": "plugin", "in": "path", "schema": {"type": "string"},
              "description": "Plugin name."},
@@ -89,6 +89,7 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         """ Process PUT """
         data = flask.request.get_json(silent=True) or {}
         pylon_ids = data.get("pylon_ids", [])
+        force = bool(data.get("force", False))
         #
         if not pylon_ids:
             return {
@@ -101,11 +102,15 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         events = []
         #
         for pylon_id in pylon_ids:
-            log.info("Requesting plugin update: %s -> %s", pylon_id, plugin)
+            log.info(
+                "Requesting plugin %s: %s -> %s",
+                "redownload" if force else "update", pylon_id, plugin,
+            )
             #
             event_data = {
                 "pylon_id": pylon_id,
                 "plugins": [plugin],
+                "force": force,
                 "restart": False,
                 "pylon_pid": 1,
             }
@@ -123,7 +128,7 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         #
         return {
             "ok": True,
-            "message": f"Plugin update requested on {len(pylon_ids)} pylon(s), restart to enable new version",
+            "message": f"Plugin {'redownload' if force else 'update'} requested on {len(pylon_ids)} pylon(s); wait for it to finish before restarting",  # pylint: disable=C0301
         }
 
     # @auth.decorators.check_api(["runtime.plugins"])
