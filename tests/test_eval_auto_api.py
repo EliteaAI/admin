@@ -141,22 +141,23 @@ def test_list_defaults(items_api):
     rpc.elitea_core_eval_auto_list.return_value = {'total': 0, 'items': [], 'job': None}
     assert api.get() == ({'total': 0, 'items': [], 'job': None}, 200)
     rpc.elitea_core_eval_auto_list.assert_called_once_with(
-        project_id=None, status=None, reason=None, search=None, limit=50, offset=0)
+        project_id=None, status=None, reason=None, mode=None, search=None, limit=50, offset=0)
 
 
 def test_list_forwards_filters(items_api):
     api, rpc, request = items_api
-    request.args = MultiDict({'project_id': '2', 'status': 'not_evaluated', 'reason': 'TIMEOUT',
-                              'search': ' bot ', 'limit': '25', 'offset': '50'})
+    request.args = MultiDict({'project_id': '2', 'status': 'not_evaluated', 'reason': 'NO_TRAFFIC',
+                              'mode': 'history', 'search': ' bot ', 'limit': '25', 'offset': '50'})
     api.get()
     rpc.elitea_core_eval_auto_list.assert_called_once_with(
-        project_id=2, status='not_evaluated', reason='TIMEOUT', search='bot', limit=25, offset=50)
+        project_id=2, status='not_evaluated', reason='NO_TRAFFIC', mode='history', search='bot',
+        limit=25, offset=50)
 
 
 @pytest.mark.parametrize('args', [
     {'project_id': 'x'}, {'project_id': '0'}, {'status': 'bogus'},
     {'limit': '0'}, {'limit': '1001'}, {'limit': 'x'}, {'offset': '-1'},
-    {'reason': 'bogus'}, {'search': 'x' * 201},
+    {'reason': 'bogus'}, {'mode': 'hybrid'}, {'search': 'x' * 201},
 ])
 def test_list_rejects_bad_filters(items_api, args):
     api, rpc, request = items_api
@@ -269,3 +270,29 @@ def test_dataset_post_reports_a_refused_resync(dataset_api):
     refused = {'ok': False, 'error': 'the platform dataset has no active probes'}
     rpc.elitea_core_eval_auto_resync_platform_dataset.return_value = refused
     assert api.post() == (refused, 409)
+
+
+@pytest.fixture
+def consents_api():
+    request = Mock()
+    api, rpc, _ = _load('eval_auto_history_consents.py', request)
+    return api, rpc
+
+
+def test_history_consents_lists_the_opted_in_projects(consents_api):
+    api, rpc = consents_api
+    listing = {'total': 1, 'projects': [{'project_id': 4, 'name': 'Support', 'in_scope': True}]}
+    rpc.elitea_core_eval_auto_history_consents.return_value = listing
+    assert api.get() == (listing, 200)
+
+
+def test_history_consents_reports_a_timeout(consents_api):
+    api, rpc = consents_api
+    rpc.elitea_core_eval_auto_history_consents.side_effect = RpcTimeout()
+    assert api.get() == ({'ok': False, 'reason': 'timeout'}, 504)
+
+
+def test_history_consents_need_the_view_permission():
+    source = (API_DIR / 'eval_auto_history_consents.py').read_text()
+    assert '"configuration.evaluation.auto.view"' in source
+    assert 'recommended_roles": _AUTO_VIEW_ROLES' in source

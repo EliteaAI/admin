@@ -28,7 +28,8 @@ from .eval_auto import _AUTO_VIEW_ROLES
 
 STATUSES = ("passed", "warning", "failed", "not_evaluated")
 REASONS = ("HITL_REQUIRED", "OAUTH_REQUIRED", "AGENT_BROKEN", "TIMEOUT", "OWNER_UNAVAILABLE",
-           "BUDGET_BLOCKED", "NO_DATASET", "OTHER")
+           "BUDGET_BLOCKED", "NO_DATASET", "NO_TRAFFIC", "OTHER")
+MODES = ("live", "history")
 _MAX_LIMIT = 1000
 _MAX_HISTORY = 200
 _MAX_SEARCH = 200
@@ -56,13 +57,16 @@ def _list_args(args):
     reason = args.get("reason") or None
     if reason is not None and reason not in REASONS:
         return None, f"reason must be one of {', '.join(REASONS)}"
+    mode = args.get("mode") or None
+    if mode is not None and mode not in MODES:
+        return None, f"mode must be one of {', '.join(MODES)}"
     search = (args.get("search") or "").strip() or None
     if search is not None and len(search) > _MAX_SEARCH:
         return None, f"search must be at most {_MAX_SEARCH} characters"
     if not 1 <= limit <= _MAX_LIMIT or offset < 0:
         return None, f"limit must be 1..{_MAX_LIMIT} and offset non-negative"
-    return {"project_id": project_id, "status": status, "reason": reason, "search": search,
-            "limit": limit, "offset": offset}, None
+    return {"project_id": project_id, "status": status, "reason": reason, "mode": mode,
+            "search": search, "limit": limit, "offset": offset}, None
 
 
 def _history_limit(args):
@@ -100,6 +104,8 @@ class AdminAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
             {"name": "project_id", "in": "query", "schema": {"type": "integer"}},
             {"name": "status", "in": "query", "schema": {"type": "string", "enum": list(STATUSES)}},
             {"name": "reason", "in": "query", "schema": {"type": "string", "enum": list(REASONS)}},
+            {"name": "mode", "in": "query", "schema": {"type": "string", "enum": list(MODES)},
+             "description": "How the item was scored: by running the agent, or from its chat history."},
             {"name": "search", "in": "query", "schema": {"type": "string", "maxLength": _MAX_SEARCH},
              "description": "Matches the agent name, or the agent id when it is a number."},
             {"name": "limit", "in": "query", "schema": {"type": "integer"}},
