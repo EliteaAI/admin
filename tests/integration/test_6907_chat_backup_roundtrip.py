@@ -43,7 +43,8 @@ RESTORER = 6     # restores into the target
 # Chat tables as elitea_core creates them (columns, keys and FKs), plus the
 # tables the participants and restore point at
 DDL = """
-CREATE TABLE {s}.applications (id serial PRIMARY KEY, name varchar NOT NULL);
+CREATE TABLE {s}.applications (id serial PRIMARY KEY, name varchar NOT NULL,
+    uuid uuid NOT NULL UNIQUE DEFAULT gen_random_uuid());
 CREATE TABLE {s}.elitea_tools (id serial PRIMARY KEY, name varchar NOT NULL);
 CREATE TABLE {s}.chat_templates (id serial PRIMARY KEY, name varchar NOT NULL UNIQUE,
     participants jsonb NOT NULL DEFAULT '[]', is_default boolean NOT NULL DEFAULT false);
@@ -189,7 +190,8 @@ def _seed_source(connection):
     ids = {}
     with connection.cursor() as cursor:
         s = SOURCE
-        ids["agent"] = _insert(cursor, s, "applications", {"name": "Helper"})
+        ids["agent_uuid"] = str(uuid.uuid4())
+        ids["agent"] = _insert(cursor, s, "applications", {"name": "Helper", "uuid": ids["agent_uuid"]})
         ids["gone_agent"] = _insert(cursor, s, "applications", {"name": "Removed later"})
         participant = {}
         for key, entity_name, meta, entity_meta in (
@@ -285,8 +287,8 @@ def _seed_source(connection):
         })
         _insert(cursor, s, "chat_selected_conversations", {"user_id": OWNER, "conversation_id": team})
         _insert(cursor, s, "chat_message_trace_step", {"message_group_id": answer, "kind": "tool"})
-        # The target already has the agent under the same id
-        _insert(cursor, TARGET, "applications", {"name": "Helper"})
+        # The target already has the agent (same uuid) under the same id
+        _insert(cursor, TARGET, "applications", {"name": "Helper", "uuid": ids["agent_uuid"]})
     connection.commit()
     return ids
 
@@ -439,6 +441,26 @@ def test_restore_chats_merge_creates_everything_with_fresh_ids(seeded):
     assert ids
 
 
+def test_restored_chats_follow_their_agent_to_its_new_id(seeded):  # 7506 AC-5
+    connection, ids = seeded
+    # An unrelated agent of the target holds the id the backup's agent had
+    with connection.cursor() as cursor:
+        cursor.execute("UPDATE {}.applications SET name = 'Target''s own', uuid = gen_random_uuid()"
+                       " RETURNING id".format(TARGET))
+        own = cursor.fetchone()[0]
+    connection.commit()
+    assert own == ids["agent"]
+    #
+    _restore(connection, _backup(connection))
+    helper = _rows(connection, "SELECT id FROM {}.applications WHERE name = 'Helper'".format(TARGET))
+    assert len(helper) == 1 and helper[0][0] != own
+    answer = _rows(connection, (
+        "SELECT p.entity_meta FROM {s}.chat_message_group g"
+        " JOIN {s}.chat_participants p ON p.id = g.author_participant_id"
+        " WHERE p.entity_name = 'application'").format(s=TARGET))
+    assert answer == [({"id": helper[0][0], "project_id": TARGET_ID},)]
+
+
 def test_restore_twice_skips_existing_chats(seeded):
     connection, _ = seeded
     text = _backup(connection)
@@ -554,3 +576,24 @@ def test_failure_rolls_back_chats_and_uploaded_files(seeded):
         _restore(connection, _backup(connection), handler=Exploding(None, "attachments"))
     assert Exploding.cleaned
     assert _count(connection, TARGET, "chat_conversations") == 0
+
+
+def test_a_participant_of_the_target_project_keeps_its_entity(seeded):  # 7506 review F6
+    connection, ids = seeded
+    # A chat of the source used an agent of the target project, under the id the backup's agent has
+    with connection.cursor() as cursor:
+        cursor.execute("UPDATE {}.applications SET name = 'Target''s own', uuid = gen_random_uuid()"
+                       " RETURNING id".format(TARGET))
+        own = cursor.fetchone()[0]
+        cursor.execute(
+            "UPDATE {}.chat_participants SET entity_meta = jsonb_build_object('id', %s::int, 'project_id', %s::int)"
+            " WHERE entity_name = 'application' AND (entity_meta->>'id')::int = %s".format(SOURCE),
+            (own, TARGET_ID, ids["agent"]),
+        )
+    connection.commit()
+    _restore(connection, _backup(connection))
+    metas = [row[0] for row in _rows(connection, (
+        "SELECT p.entity_meta FROM {s}.chat_message_group g"
+        " JOIN {s}.chat_participants p ON p.id = g.author_participant_id"
+        " WHERE p.entity_name = 'application'").format(s=TARGET))]
+    assert metas == [{"id": own, "project_id": TARGET_ID}]

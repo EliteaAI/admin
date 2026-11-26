@@ -197,20 +197,20 @@ class TestChatTemplatesReplaced:
     def test_backup_without_templates_leaves_target_alone(self):
         connection = FakeConnection()
         summary = _restore(connection, _backup(with_templates=False))
-        assert not any(sql.startswith("DELETE") for sql in connection.statements())
+        assert not any(sql.startswith('DELETE FROM "') for sql in connection.statements())
         assert summary["replaced_tables"] == []
 
     def test_truncate_restore_does_not_delete_again(self):
         connection = FakeConnection()
         summary = _restore(connection, _backup(), truncate=True)
-        assert not any(sql.startswith("DELETE") for sql in connection.statements())
+        assert not any(sql.startswith('DELETE FROM "') for sql in connection.statements())
         assert "chat_templates" in summary["truncated_tables"]
         assert summary["replaced_tables"] == []
 
     def test_partial_restore_of_other_tables_keeps_templates(self):
         connection = FakeConnection()
         _restore(connection, _backup(), tables=["applications"])
-        assert not any(sql.startswith("DELETE") for sql in connection.statements())
+        assert not any(sql.startswith('DELETE FROM "') for sql in connection.statements())
 
     def test_dry_run_rolls_back(self):
         connection = FakeConnection()
@@ -245,7 +245,7 @@ class TestCrossProjectRemap:
     def test_same_project_restore_does_not_remap(self):
         connection = FakeConnection(template_rows=self._rows())
         summary = _restore(connection, _backup())
-        assert not any(sql.startswith("UPDATE") for sql in connection.statements())
+        assert not any(sql.startswith('UPDATE "') for sql in connection.statements())
         assert summary["remapped_rows"] == 0
 
     def test_no_remap_when_templates_not_restored(self):
@@ -254,4 +254,4 @@ class TestCrossProjectRemap:
             connection, _backup(), tables=["applications"],
             owner_user_id=99, owner_project_id=TARGET_PROJECT, source_project_id=SOURCE_PROJECT,
         )
-        assert not any(sql.startswith("UPDATE") for sql in connection.statements())
+        assert not any(sql.startswith('UPDATE "') for sql in connection.statements())

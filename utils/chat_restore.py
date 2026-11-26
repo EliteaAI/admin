@@ -137,6 +137,7 @@ def _map_participants(cursor, staged, existing, context):  # pylint: disable=R09
     restorer_id = context.get("restorer_id")
     source_project_id = context.get("source_project_id")
     target_project_id = context.get("target_project_id")
+    entity_maps = context.get("entity_maps") or {}
     #
     cursor.execute(
         "SELECT id, uuid::text, entity_name, entity_meta::text, meta::text FROM {}".format(
@@ -153,6 +154,19 @@ def _map_participants(cursor, staged, existing, context):  # pylint: disable=R09
         entity_meta = json.loads(entity_meta or "{}")
         meta = json.loads(meta or "{}")
         #
+        table = PARTICIPANT_ENTITY_TABLES.get(entity_name)
+        # The backup's own agents / toolkits were restored under new ids (entity_restore);
+        # an entry of another project (public, or the target itself) names that project's row
+        backup_project = source_project_id if source_project_id is not None else target_project_id
+        restored = entity_maps.get(table) if table else None
+        gone = False
+        if restored is not None and entity_meta.get("project_id") == backup_project:
+            if entity_meta.get("id") in restored and restored[entity_meta.get("id")] is not None:
+                entity_meta = dict(entity_meta, id=restored[entity_meta.get("id")])
+            elif source_project_id not in (None, target_project_id):
+                # Not restored: the id names an unrelated row of the target
+                gone = True
+        #
         if source_project_id is not None and entity_meta.get("project_id") == source_project_id:
             entity_meta = dict(entity_meta, project_id=target_project_id)
         #
@@ -163,9 +177,8 @@ def _map_participants(cursor, staged, existing, context):  # pylint: disable=R09
                 entity_meta = dict(entity_meta, id=restorer_id)
                 meta = {}
         #
-        table = PARTICIPANT_ENTITY_TABLES.get(entity_name)
         if table and entity_meta.get("project_id") == target_project_id \
-                and not _table_has_row(cursor, table, entity_meta.get("id"), existing):
+                and (gone or not _table_has_row(cursor, table, entity_meta.get("id"), existing)):
             # The agent / toolkit is not in this project: its messages go to the default assistant
             if dummy is None:
                 dummy = _target_participant(cursor, cache, DUMMY_ENTITY, {}, {}, None)

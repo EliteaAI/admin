@@ -28,6 +28,7 @@ from pylon.core.tools import log  # pylint: disable=E0611,E0401
 from .project_backup import SAFE_MODE_EXCLUDED_TABLES, DATA_TYPE_SQL, DATA_TYPE_JOINS
 from .chat_backup import CHAT_BACKUP_TABLES, CHATS_NONE, CHATS_WITH_ATTACHMENTS, CHAT_OPTIONS
 from . import chat_restore
+from . import entity_restore
 from .skill_files_backup import SKILL_FILES_TABLE, SKILL_FILE_WRITE_LOCK
 
 
@@ -303,6 +304,29 @@ def remap_project_references(items, source_project_id, target_project_id):
     return result
 
 
+def remap_entity_ids(items, project_id, id_maps):
+    """ Point list entries at the rows their entity was restored as
+
+    Only entries of `project_id` (the project the backup was taken from) are
+    restored rows; id_maps is table -> {old id: new id}.
+    """
+    if not isinstance(items, list) or not id_maps:
+        return items
+    #
+    result = []
+    for item in items:
+        if isinstance(item, dict) and item.get("project_id") == project_id:
+            table = chat_restore.PARTICIPANT_ENTITY_TABLES.get(item.get("entity_name"))
+            restored = id_maps.get(table)
+            if restored is not None and item.get("id") in restored:
+                if restored[item.get("id")] is None:
+                    continue
+                item = dict(item, id=restored[item.get("id")])
+        result.append(item)
+    #
+    return result
+
+
 def drop_non_member_users(items, member_user_ids):
     """ Drop list entries that reference a user outside member_user_ids """
     if not isinstance(items, list):
@@ -319,11 +343,16 @@ def drop_non_member_users(items, member_user_ids):
     ]
 
 
-def _remap_project_reference_columns(
+def _remap_project_reference_columns(  # pylint: disable=R0913
         cursor, tables, source_project_id, target_project_id, member_user_ids=None,
+        id_maps=None, entity_project_id=None,
 ):
     """ Repoint project references inside JSON columns and drop references to
-    users who are not members of the target, return the rows changed """
+    users who are not members of the target, return the rows changed
+
+    id_maps (table -> {old id: new id}) repoints the entries of entity_project_id
+    at the rows a merge restore gave their entities.
+    """
     changed = 0
     #
     for table, column in PROJECT_REFERENCE_JSON_COLUMNS.items():
@@ -336,7 +365,7 @@ def _remap_project_reference_columns(
                 continue
             #
             items = json.loads(value)
-            remapped = items
+            remapped = remap_entity_ids(items, entity_project_id, id_maps)
             if source_project_id is not None:
                 remapped = remap_project_references(remapped, source_project_id, target_project_id)
             if member_user_ids is not None:
@@ -1334,6 +1363,48 @@ def _flush_staged(  # pylint: disable=R0913
             summary["total_rows"] += cursor.rowcount
 
 
+def _load_id_maps(cursor, maps):
+    """ table -> {old id: new id} of the restored entities chats and templates point at """
+    loaded = {}
+    for table in sorted(set(chat_restore.PARTICIPANT_ENTITY_TABLES.values()).intersection(maps)):
+        # new_id NULL: the entity was not restored and has no row in the target
+        cursor.execute("SELECT old_id, new_id FROM {}".format(maps[table]))
+        loaded[table] = dict(cursor.fetchall())
+    return loaded
+
+
+def _backup_project_id(source_project_id, chat_context, owner_project_id, project_id):
+    """ The project the backup was taken from: its entries are the restored rows """
+    for value in (source_project_id, (chat_context or {}).get("source_project_id"), owner_project_id, project_id):
+        if value is not None:
+            return value
+    return None
+
+
+def _merge_entities(cursor, schema, staged, columns_by_table, types_by_table, summary,  # pylint: disable=R0913
+                    cross_project=False):
+    """ Copy the staged entity rows in with fresh ids, return their maps loaded """
+    entity_tables = {table: name for table, name in staged.items() if table not in CHAT_BACKUP_TABLES}
+    if not entity_tables:
+        return {}
+    #
+    result, maps = entity_restore.merge_entities(
+        cursor, entity_tables, columns_by_table, types_by_table,
+        entity_restore.foreign_keys(cursor, schema), entity_restore.serial_tables(cursor, schema),
+        cross_project,
+    )
+    summary["entities"] = result
+    for table, stats in result.items():
+        if stats.get("restored"):
+            summary["rows"][table] = summary["rows"].get(table, 0) + stats["restored"]
+            summary["total_rows"] += stats["restored"]
+        if stats.get("merged"):
+            summary["merged_rows"][table] = stats["merged"]
+        if stats.get("orphans"):
+            summary["orphan_rows"][table] = summary["orphan_rows"].get(table, 0) + stats["orphans"]
+    return _load_id_maps(cursor, maps)
+
+
 def expand_with_parents(tables, parents):
     """ Add the FK ancestors of the requested tables """
     result = set(tables)
@@ -1535,6 +1606,11 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
     # Rows of merged tables and of the tables referencing them are collected in
     # temp tables and applied once the whole artifact has been read
     staged_candidates = set(MERGED_BY_KEY_TABLES).intersection(existing).union(children)
+    # A merge gives every restored row a fresh id (entity_restore): the backup's
+    # ids belong to another project, or to rows the target deleted since
+    merge = not truncate
+    if merge:
+        staged_candidates = existing.difference(CHAT_BACKUP_TABLES).difference(REPLACED_ON_RESTORE_TABLES)
     if with_chats:
         staged_candidates.update(CHAT_BACKUP_TABLES.intersection(existing))
     staged = {}
@@ -1719,13 +1795,20 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
                 summary["total_rows"] += cursor.rowcount
         timer.mark("statements")
         #
+        id_maps = {}
         try:
-            _flush_staged(
-                cursor, staged, children, columns_by_table, summary, child_references,
-            )
+            if merge:
+                id_maps = _merge_entities(
+                    cursor, schema, staged, columns_by_table, types_by_table, summary,
+                    cross_project=source_project_id is not None and source_project_id != owner_project_id,
+                )
+            else:
+                _flush_staged(
+                    cursor, staged, children, columns_by_table, summary, child_references,
+                )
             timer.mark("merge")
             if with_chats:
-                context = dict(chat_context or {}, member_user_ids=member_user_ids)
+                context = dict(chat_context or {}, member_user_ids=member_user_ids, entity_maps=id_maps)
                 summary["chats"], attachments = chat_restore.merge_chats(
                     cursor, staged, columns_by_table, existing, context,
                 )
@@ -1751,11 +1834,12 @@ def restore_safe_backup(  # pylint: disable=R0912,R0913,R0914,R0915
         # and may reference users who are not members of this one
         cross_project = source_project_id is not None and owner_project_id is not None \
             and source_project_id != owner_project_id
-        if cross_project or member_user_ids is not None:
+        if cross_project or member_user_ids is not None or id_maps:
             summary["remapped_rows"] = _remap_project_reference_columns(
                 cursor, seen_tables,
                 source_project_id if cross_project else None, owner_project_id,
-                member_user_ids,
+                member_user_ids, id_maps,
+                _backup_project_id(source_project_id, chat_context, owner_project_id, project_id),
             )
         #
         timer.mark("remap")
