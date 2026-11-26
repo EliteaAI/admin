@@ -21,8 +21,6 @@ Which items of a type are deleted or skipped is decided by the plugins that own
 them (elitea_core, configurations), not here.
 """
 
-from . import chat_backup
-
 TYPE_CHATS = "chats"
 TYPE_AGENTS = "agents"
 TYPE_PIPELINES = "pipelines"
@@ -77,9 +75,9 @@ def parse_types(payload):
     return [name for name in SUPPORTED_TYPES if name in types]
 
 
-def visible_chat_ids_sql(schema, user_id):
-    """ Chats the caller sees: the ones counted, backed up and deleted """
-    return chat_backup.conversation_scope_sql(schema, user_id)
+def project_chat_ids_sql(schema):
+    """ Every chat of the project, other users' private ones included (#7513): the ones counted and deleted """
+    return 'select id from "{}".chat_conversations'.format(str(schema).replace('"', '""'))
 
 
 def is_authorized(has_permission, is_admin, owns_project):

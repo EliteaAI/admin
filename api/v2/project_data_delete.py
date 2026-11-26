@@ -80,8 +80,8 @@ def _project_schema(project_id):
     return pc["PROJECT_SCHEMA_TEMPLATE"].format(project_id)
 
 
-def _visible_chat_ids(project_id, user_id):
-    """ Ids of the chats the caller sees, or None when the project schema is missing """
+def _project_chat_ids(project_id):
+    """ Ids of all chats of the project, or None when the project schema is missing """
     schema = _project_schema(project_id)
     connection = context.db.engine.raw_connection()
     try:
@@ -91,7 +91,7 @@ def _visible_chat_ids(project_id, user_id):
             )
             if cursor.fetchone() is None:
                 return None
-            cursor.execute(pdd.visible_chat_ids_sql(schema, user_id))
+            cursor.execute(pdd.project_chat_ids_sql(schema))
             ids = [row[0] for row in cursor.fetchall()]
         connection.rollback()
         return ids
@@ -200,9 +200,8 @@ class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         if not _authorized(project_id):
             return _denied()
         #
-        user_id = auth.current_user().get("id")
         try:
-            chat_ids = _visible_chat_ids(project_id, user_id)
+            chat_ids = _project_chat_ids(project_id)
         except Exception:  # pylint: disable=W0703
             log.exception("project_data_delete: failed to count chats of project %s", project_id)
             return {"ok": False, "error": "failed to resolve project chats"}, 500
@@ -216,8 +215,8 @@ class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
 
     @register_openapi(
         name="Project Data Delete",
-        description="Permanently delete all items of the selected types in the project: chats the "
-                    "caller sees, agents, pipelines, skills, toolkits, mcps, credentials. Published or "
+        description="Permanently delete all items of the selected types in the project: chats (all "
+                    "users' ones), agents, pipelines, skills, toolkits, mcps, credentials. Published or "
                     "embedded agents, pipelines and skills are skipped.",
         parameters=[
             {"name": "project_id", "in": "path", "schema": {"type": "integer"},
@@ -240,7 +239,7 @@ class PromptLibAPI(api_tools.APIModeHandler):  # pylint: disable=R0903
         #
         user_id = auth.current_user().get("id")
         try:
-            chat_ids = _visible_chat_ids(project_id, user_id) if pdd.TYPE_CHATS in types else []
+            chat_ids = _project_chat_ids(project_id) if pdd.TYPE_CHATS in types else []
         except Exception:  # pylint: disable=W0703
             log.exception("project_data_delete: failed to resolve chats of project %s", project_id)
             return {"ok": False, "error": "failed to resolve project chats"}, 500
