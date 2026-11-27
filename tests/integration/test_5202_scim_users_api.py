@@ -9,6 +9,7 @@ import pytest
 
 PLUGIN_ROOT = pathlib.Path(__file__).resolve().parents[2]
 PROTECTED, NORMAL = 7, 3
+ROLES = {1: ["admin"]}  # the signed-in user (id 1) is an admin
 
 
 class FakeGuards:
@@ -42,7 +43,7 @@ def api(monkeypatch):
     tools.api_tools = types.SimpleNamespace(APIModeHandler=object, APIBase=object, endpoint_metrics=lambda f: f)
     tools.register_openapi = lambda **k: (lambda f: f)
     pylon_tools = types.ModuleType("pylon.core.tools")
-    pylon_tools.log = types.SimpleNamespace(info=lambda *a, **k: None)
+    pylon_tools.log = types.SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None)
     utils = types.ModuleType("fake5202users.utils")
     utils.validate_role_assignment = lambda roles: (True, [])
     utils.get_role_validation_error = lambda roles: ({}, 400)
@@ -97,6 +98,7 @@ def api(monkeypatch):
                 update_roles_for_user=update_roles_for_user)),
             event_manager=types.SimpleNamespace(fire_event=lambda *a: None)),
         remove_users_from_project=remove_users_from_project,
+        get_user_roles=lambda project_id, user_id: [{"id": 1, "name": r} for r in ROLES.get(user_id, [])],
         lifecycle_audit_ctx=lambda: {"actor_type": "user", "actor_id": 1},  # #7504
     )
     return instance, request, calls
@@ -203,3 +205,42 @@ def test_rows_say_which_members_are_synced(api, monkeypatch):
     body, status = instance.get(project_id=PROTECTED, mode="default")
     assert status == 200 and body["scim_managed"] is True
     assert {r["id"]: r["scim_synced"] for r in body["rows"]} == {5: True, 9: False}
+
+
+SELF_REMOVAL = {
+    "code": "admin_self_removal",
+    "message": "You cannot remove yourself from the project while you have the admin role",
+}
+
+
+def test_admin_cannot_remove_themselves(api):
+    result = delete(api, "9,1")
+    assert result == (SELF_REMOVAL, 403)
+    assert api[2] == []
+
+
+def test_admin_self_removal_is_refused_when_they_are_the_only_id(api):
+    assert delete(api, "1") == (SELF_REMOVAL, 403)
+    assert api[2] == []
+
+
+def test_non_admin_may_remove_themselves(api, monkeypatch):
+    monkeypatch.setitem(ROLES, 1, ["editor"])
+    result = delete(api, "1")
+    assert result[1] == 204
+    assert api[2][0][:3] == ("remove", PROTECTED, [1])
+
+
+def test_admin_may_remove_other_users(api):
+    assert delete(api, "9,10")[1] == 204
+
+
+def test_admin_cannot_clear_their_own_roles(api):
+    result = put(api, PROTECTED, 1, [])
+    assert result == (SELF_REMOVAL, 403)
+    assert api[2] == []
+
+
+def test_admin_may_change_their_own_roles_to_a_non_empty_list(api):
+    result = put(api, PROTECTED, 1, ["editor"])
+    assert result[1] == 200 and api[2] == [("roles", PROTECTED, [1], ["editor"])]
