@@ -97,6 +97,34 @@ def test_added_notifications_use_defaults_exclude_the_actor_and_snapshot_project
     )
 
 
+def test_added_notifications_include_the_assigned_roles(producer):
+    producer.notify(
+        producer.module,
+        42,
+        [9],
+        "user_was_added_to_some_project_as_teammate",
+        actor_id=1,
+        roles=["admin", "editor", "admin"],
+    )
+
+    assert producer.events[0][1]["meta"] == {
+        "project_name": "Research [Archive]",
+        "roles": ["admin", "editor"],
+        "message": "You have been added to Research [Archive] project as Admin, Editor.",
+    }
+
+
+def test_removed_notifications_ignore_roles(producer):
+    producer.config["notifications"] = {"project_membership": {"on_removed": True}}
+
+    producer.notify(producer.module, 42, [9], "user_was_removed_from_project", roles=["admin"])
+
+    assert producer.events[0][1]["meta"] == {
+        "project_name": "Research [Archive]",
+        "message": "You have been removed from Research [Archive] project.",
+    }
+
+
 def test_removed_notifications_are_off_by_default_and_only_send_for_team_projects(producer):
     producer.notify(producer.module, 42, [9], "user_was_removed_from_project")
     assert producer.events == []
