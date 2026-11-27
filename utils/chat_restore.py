@@ -37,6 +37,14 @@ PARTICIPANT_ENTITY_TABLES = {
     "prompt": "prompts",
 }
 
+# entity_name -> table of the versions a participant pins (entity_settings.version_id)
+PARTICIPANT_VERSION_TABLES = {
+    "application": "application_versions",
+    "skill": "skill_versions",
+}
+# entity table -> its JSON meta key naming the default version
+DEFAULT_VERSION_KEY = "default_version_id"
+
 USER_ENTITY = "user"
 DUMMY_ENTITY = "dummy"
 
@@ -198,6 +206,61 @@ def _map_participants(cursor, staged, existing, context):  # pylint: disable=R09
     return mapping, foreign_table
 
 
+def _pinned_versions(cursor, staged, existing, context):
+    """ old participant id -> version_id its restored mappings pin, for the participants
+        of restored agents / skills; None removes the pin """
+    entity_maps = context.get("entity_maps") or {}
+    source_project_id = context.get("source_project_id")
+    target_project_id = context.get("target_project_id")
+    backup_project = source_project_id if source_project_id is not None else target_project_id
+    #
+    cursor.execute(
+        "SELECT DISTINCT s.id, s.entity_name, s.entity_meta::text, m.entity_settings::text"
+        " FROM {} s JOIN {} m ON m.participant_id = s.id".format(
+            staged["chat_participants"], staged["chat_participant_mapping"])
+    )
+    pins = {}
+    defaults = {}
+    for old_id, entity_name, entity_meta, settings in cursor.fetchall():
+        versions = entity_maps.get(PARTICIPANT_VERSION_TABLES.get(entity_name))
+        entities = entity_maps.get(PARTICIPANT_ENTITY_TABLES.get(entity_name))
+        entity_meta = json.loads(entity_meta or "{}")
+        settings = json.loads(settings or "{}")
+        if versions is None or entities is None or not isinstance(settings, dict) \
+                or "version_id" not in settings or entity_meta.get("project_id") != backup_project:
+            continue
+        entity_id = entities.get(entity_meta.get("id"))
+        if entity_id is None:
+            continue
+        pinned = settings.get("version_id")
+        if versions.get(pinned) is not None:
+            pins[(old_id, pinned)] = versions[pinned]
+            continue
+        # The pinned version is not in the backup: the restored entity's default one
+        table = PARTICIPANT_ENTITY_TABLES[entity_name]
+        if (table, entity_id) not in defaults:
+            default = None
+            if table in existing:
+                cursor.execute(
+                    "SELECT (meta->>%s)::bigint FROM {} WHERE id = %s".format(_quote(table)),
+                    (DEFAULT_VERSION_KEY, entity_id),
+                )
+                row = cursor.fetchone()
+                default = row[0] if row else None
+            defaults[(table, entity_id)] = default
+        pins[(old_id, pinned)] = defaults[(table, entity_id)]
+    #
+    pinned_map = _staging_name("chat_participant_mapping", "_pins")
+    cursor.execute(
+        "CREATE TEMP TABLE {} (old_participant bigint, old_version bigint, new_version bigint,"
+        " PRIMARY KEY (old_participant, old_version)) ON COMMIT DROP".format(pinned_map)
+    )
+    for (old_id, pinned), new_version in pins.items():
+        if isinstance(pinned, int):
+            cursor.execute("INSERT INTO {} VALUES (%s, %s, %s)".format(pinned_map), (old_id, pinned, new_version))
+    return pinned_map
+
+
 def _foreign_user_filter(column, context):
     """ SQL expression giving the restoring user for users who are not members """
     members = context.get("member_user_ids")
@@ -258,6 +321,9 @@ def merge_chats(cursor, staged, columns_by_table, existing, context):  # pylint:
     cursor.execute("SELECT count(*) FROM {}".format(staged["chat_conversations"]))
     skipped_chats = cursor.fetchone()[0] - restored_chats
     #
+    # The version a participant pins follows its agent / skill to the restored rows;
+    # one the backup does not carry becomes the restored entity's default version
+    pins = _pinned_versions(cursor, staged, existing, context)
     _copy(
         cursor, "chat_participant_mapping",
         [name for name in columns["chat_participant_mapping"] if name != "id"],
@@ -266,8 +332,18 @@ def merge_chats(cursor, staged, columns_by_table, existing, context):  # pylint:
             "conversation_id": "c.new_id",
             "participant_id": "(SELECT p.new_id FROM {} p WHERE p.old_id = s.participant_id)".format(
                 participants),
+            "entity_settings": (
+                "CASE WHEN v.old_participant IS NULL THEN s.entity_settings"
+                " WHEN v.new_version IS NULL THEN s.entity_settings::jsonb - 'version_id'"
+                " ELSE jsonb_set(s.entity_settings::jsonb, '{version_id}', to_jsonb(v.new_version)) END"
+            ),
         },
-        joins=" JOIN {} c ON c.old_id = s.conversation_id".format(conversations),
+        joins=(
+            " JOIN {c} c ON c.old_id = s.conversation_id"
+            " LEFT JOIN {v} v ON v.old_participant = s.participant_id"
+            " AND jsonb_typeof(s.entity_settings::jsonb -> 'version_id') = 'number'"
+            " AND v.old_version = (s.entity_settings::jsonb ->> 'version_id')::bigint"
+        ).format(c=conversations, v=pins),
     )
     #
     # Messages of the restored conversations

@@ -1366,7 +1366,8 @@ def _flush_staged(  # pylint: disable=R0913
 def _load_id_maps(cursor, maps):
     """ table -> {old id: new id} of the restored entities chats and templates point at """
     loaded = {}
-    for table in sorted(set(chat_restore.PARTICIPANT_ENTITY_TABLES.values()).intersection(maps)):
+    tables = set(chat_restore.PARTICIPANT_ENTITY_TABLES.values()).union(chat_restore.PARTICIPANT_VERSION_TABLES.values())
+    for table in sorted(tables.intersection(maps)):
         # new_id NULL: the entity was not restored and has no row in the target
         cursor.execute("SELECT old_id, new_id FROM {}".format(maps[table]))
         loaded[table] = dict(cursor.fetchall())

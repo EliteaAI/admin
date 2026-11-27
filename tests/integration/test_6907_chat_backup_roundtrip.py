@@ -44,6 +44,9 @@ RESTORER = 6     # restores into the target
 # tables the participants and restore point at
 DDL = """
 CREATE TABLE {s}.applications (id serial PRIMARY KEY, name varchar NOT NULL,
+    uuid uuid NOT NULL UNIQUE DEFAULT gen_random_uuid(), meta jsonb NOT NULL DEFAULT '{{}}');
+CREATE TABLE {s}.application_versions (id serial PRIMARY KEY,
+    application_id integer NOT NULL REFERENCES {s}.applications(id), name varchar NOT NULL,
     uuid uuid NOT NULL UNIQUE DEFAULT gen_random_uuid());
 CREATE TABLE {s}.elitea_tools (id serial PRIMARY KEY, name varchar NOT NULL);
 CREATE TABLE {s}.chat_templates (id serial PRIMARY KEY, name varchar NOT NULL UNIQUE,
@@ -459,6 +462,61 @@ def test_restored_chats_follow_their_agent_to_its_new_id(seeded):  # 7506 AC-5
         " JOIN {s}.chat_participants p ON p.id = g.author_participant_id"
         " WHERE p.entity_name = 'application'").format(s=TARGET))
     assert answer == [({"id": helper[0][0], "project_id": TARGET_ID},)]
+
+
+def _pinned_versions(connection, schema, agent_id):
+    """ version_id each restored chat pins for the agent participant `agent_id` """
+    return _rows(connection, (
+        "SELECT m.entity_settings->'version_id' FROM {s}.chat_participant_mapping m"
+        " JOIN {s}.chat_participants p ON p.id = m.participant_id"
+        " WHERE p.entity_name = 'application' AND (p.entity_meta->>'id')::int = %s").format(s=schema),
+        (agent_id,))
+
+
+def _pin_agent_version(connection, ids, with_version=True):
+    """ The backup's agent participant pins a version; the target's unrelated agent
+        holds both the agent id and the version id the backup uses """
+    with connection.cursor() as cursor:
+        version = _insert(cursor, SOURCE, "application_versions", {"application_id": ids["agent"], "name": "base"}) \
+            if with_version else 7
+        cursor.execute(
+            "UPDATE {s}.chat_participant_mapping SET entity_settings = jsonb_build_object('version_id', %s::int)"
+            " WHERE participant_id = %s".format(s=SOURCE), (version, ids["participant"]["agent"]))
+        cursor.execute("UPDATE {}.applications SET name = 'Target''s own', uuid = gen_random_uuid()"
+                       " RETURNING id".format(TARGET))
+        own = cursor.fetchone()[0]
+        own_version = _insert(cursor, TARGET, "application_versions", {"application_id": own, "name": "base"})
+    connection.commit()
+    return own_version
+
+
+def test_restored_chats_pin_the_restored_version_of_their_agent(seeded):  # 7506 e2e finding
+    connection, ids = seeded
+    own_version = _pin_agent_version(connection, ids)
+    _restore(connection, _backup(connection))
+    helper = _rows(connection, "SELECT id FROM {}.applications WHERE name = 'Helper'".format(TARGET))[0][0]
+    version = _rows(connection, "SELECT id FROM {}.application_versions WHERE application_id = %s".format(TARGET),
+                    (helper,))[0][0]
+    assert version != own_version
+    pinned = _pinned_versions(connection, TARGET, helper)
+    assert pinned and set(pinned) == {(version,)}
+
+
+def test_a_pinned_version_missing_from_the_backup_falls_back_to_the_default(seeded):  # 7506 e2e finding
+    connection, ids = seeded
+    with connection.cursor() as cursor:
+        default = _insert(cursor, SOURCE, "application_versions", {"application_id": ids["agent"], "name": "latest"})
+        cursor.execute("UPDATE {}.applications SET meta = jsonb_build_object('default_version_id', %s::int)"
+                       " WHERE id = %s".format(SOURCE), (default, ids["agent"]))
+    connection.commit()
+    # The chat pins version 7, which the backup does not carry
+    _pin_agent_version(connection, ids, with_version=False)
+    _restore(connection, _backup(connection))
+    helper = _rows(connection, "SELECT id FROM {}.applications WHERE name = 'Helper'".format(TARGET))[0][0]
+    restored_default = _rows(connection, "SELECT (meta->>'default_version_id')::int FROM {}.applications"
+                                         " WHERE id = %s".format(TARGET), (helper,))[0][0]
+    pinned = _pinned_versions(connection, TARGET, helper)
+    assert pinned and set(pinned) == {(restored_default,)}
 
 
 def test_restore_twice_skips_existing_chats(seeded):
