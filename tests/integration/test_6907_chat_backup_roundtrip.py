@@ -43,7 +43,11 @@ RESTORER = 6     # restores into the target
 # Chat tables as elitea_core creates them (columns, keys and FKs), plus the
 # tables the participants and restore point at
 DDL = """
-CREATE TABLE {s}.applications (id serial PRIMARY KEY, name varchar NOT NULL);
+CREATE TABLE {s}.applications (id serial PRIMARY KEY, name varchar NOT NULL,
+    uuid uuid NOT NULL UNIQUE DEFAULT gen_random_uuid(), meta jsonb NOT NULL DEFAULT '{{}}');
+CREATE TABLE {s}.application_versions (id serial PRIMARY KEY,
+    application_id integer NOT NULL REFERENCES {s}.applications(id), name varchar NOT NULL,
+    uuid uuid NOT NULL UNIQUE DEFAULT gen_random_uuid());
 CREATE TABLE {s}.elitea_tools (id serial PRIMARY KEY, name varchar NOT NULL);
 CREATE TABLE {s}.chat_templates (id serial PRIMARY KEY, name varchar NOT NULL UNIQUE,
     participants jsonb NOT NULL DEFAULT '[]', is_default boolean NOT NULL DEFAULT false);
@@ -189,7 +193,8 @@ def _seed_source(connection):
     ids = {}
     with connection.cursor() as cursor:
         s = SOURCE
-        ids["agent"] = _insert(cursor, s, "applications", {"name": "Helper"})
+        ids["agent_uuid"] = str(uuid.uuid4())
+        ids["agent"] = _insert(cursor, s, "applications", {"name": "Helper", "uuid": ids["agent_uuid"]})
         ids["gone_agent"] = _insert(cursor, s, "applications", {"name": "Removed later"})
         participant = {}
         for key, entity_name, meta, entity_meta in (
@@ -285,8 +290,8 @@ def _seed_source(connection):
         })
         _insert(cursor, s, "chat_selected_conversations", {"user_id": OWNER, "conversation_id": team})
         _insert(cursor, s, "chat_message_trace_step", {"message_group_id": answer, "kind": "tool"})
-        # The target already has the agent under the same id
-        _insert(cursor, TARGET, "applications", {"name": "Helper"})
+        # The target already has the agent (same uuid) under the same id
+        _insert(cursor, TARGET, "applications", {"name": "Helper", "uuid": ids["agent_uuid"]})
     connection.commit()
     return ids
 
@@ -439,6 +444,81 @@ def test_restore_chats_merge_creates_everything_with_fresh_ids(seeded):
     assert ids
 
 
+def test_restored_chats_follow_their_agent_to_its_new_id(seeded):  # 7506 AC-5
+    connection, ids = seeded
+    # An unrelated agent of the target holds the id the backup's agent had
+    with connection.cursor() as cursor:
+        cursor.execute("UPDATE {}.applications SET name = 'Target''s own', uuid = gen_random_uuid()"
+                       " RETURNING id".format(TARGET))
+        own = cursor.fetchone()[0]
+    connection.commit()
+    assert own == ids["agent"]
+    #
+    _restore(connection, _backup(connection))
+    helper = _rows(connection, "SELECT id FROM {}.applications WHERE name = 'Helper'".format(TARGET))
+    assert len(helper) == 1 and helper[0][0] != own
+    answer = _rows(connection, (
+        "SELECT p.entity_meta FROM {s}.chat_message_group g"
+        " JOIN {s}.chat_participants p ON p.id = g.author_participant_id"
+        " WHERE p.entity_name = 'application'").format(s=TARGET))
+    assert answer == [({"id": helper[0][0], "project_id": TARGET_ID},)]
+
+
+def _pinned_versions(connection, schema, agent_id):
+    """ version_id each restored chat pins for the agent participant `agent_id` """
+    return _rows(connection, (
+        "SELECT m.entity_settings->'version_id' FROM {s}.chat_participant_mapping m"
+        " JOIN {s}.chat_participants p ON p.id = m.participant_id"
+        " WHERE p.entity_name = 'application' AND (p.entity_meta->>'id')::int = %s").format(s=schema),
+        (agent_id,))
+
+
+def _pin_agent_version(connection, ids, with_version=True):
+    """ The backup's agent participant pins a version; the target's unrelated agent
+        holds both the agent id and the version id the backup uses """
+    with connection.cursor() as cursor:
+        version = _insert(cursor, SOURCE, "application_versions", {"application_id": ids["agent"], "name": "base"}) \
+            if with_version else 7
+        cursor.execute(
+            "UPDATE {s}.chat_participant_mapping SET entity_settings = jsonb_build_object('version_id', %s::int)"
+            " WHERE participant_id = %s".format(s=SOURCE), (version, ids["participant"]["agent"]))
+        cursor.execute("UPDATE {}.applications SET name = 'Target''s own', uuid = gen_random_uuid()"
+                       " RETURNING id".format(TARGET))
+        own = cursor.fetchone()[0]
+        own_version = _insert(cursor, TARGET, "application_versions", {"application_id": own, "name": "base"})
+    connection.commit()
+    return own_version
+
+
+def test_restored_chats_pin_the_restored_version_of_their_agent(seeded):  # 7506 e2e finding
+    connection, ids = seeded
+    own_version = _pin_agent_version(connection, ids)
+    _restore(connection, _backup(connection))
+    helper = _rows(connection, "SELECT id FROM {}.applications WHERE name = 'Helper'".format(TARGET))[0][0]
+    version = _rows(connection, "SELECT id FROM {}.application_versions WHERE application_id = %s".format(TARGET),
+                    (helper,))[0][0]
+    assert version != own_version
+    pinned = _pinned_versions(connection, TARGET, helper)
+    assert pinned and set(pinned) == {(version,)}
+
+
+def test_a_pinned_version_missing_from_the_backup_falls_back_to_the_default(seeded):  # 7506 e2e finding
+    connection, ids = seeded
+    with connection.cursor() as cursor:
+        default = _insert(cursor, SOURCE, "application_versions", {"application_id": ids["agent"], "name": "latest"})
+        cursor.execute("UPDATE {}.applications SET meta = jsonb_build_object('default_version_id', %s::int)"
+                       " WHERE id = %s".format(SOURCE), (default, ids["agent"]))
+    connection.commit()
+    # The chat pins version 7, which the backup does not carry
+    _pin_agent_version(connection, ids, with_version=False)
+    _restore(connection, _backup(connection))
+    helper = _rows(connection, "SELECT id FROM {}.applications WHERE name = 'Helper'".format(TARGET))[0][0]
+    restored_default = _rows(connection, "SELECT (meta->>'default_version_id')::int FROM {}.applications"
+                                         " WHERE id = %s".format(TARGET), (helper,))[0][0]
+    pinned = _pinned_versions(connection, TARGET, helper)
+    assert pinned and set(pinned) == {(restored_default,)}
+
+
 def test_restore_twice_skips_existing_chats(seeded):
     connection, _ = seeded
     text = _backup(connection)
@@ -554,3 +634,24 @@ def test_failure_rolls_back_chats_and_uploaded_files(seeded):
         _restore(connection, _backup(connection), handler=Exploding(None, "attachments"))
     assert Exploding.cleaned
     assert _count(connection, TARGET, "chat_conversations") == 0
+
+
+def test_a_participant_of_the_target_project_keeps_its_entity(seeded):  # 7506 review F6
+    connection, ids = seeded
+    # A chat of the source used an agent of the target project, under the id the backup's agent has
+    with connection.cursor() as cursor:
+        cursor.execute("UPDATE {}.applications SET name = 'Target''s own', uuid = gen_random_uuid()"
+                       " RETURNING id".format(TARGET))
+        own = cursor.fetchone()[0]
+        cursor.execute(
+            "UPDATE {}.chat_participants SET entity_meta = jsonb_build_object('id', %s::int, 'project_id', %s::int)"
+            " WHERE entity_name = 'application' AND (entity_meta->>'id')::int = %s".format(SOURCE),
+            (own, TARGET_ID, ids["agent"]),
+        )
+    connection.commit()
+    _restore(connection, _backup(connection))
+    metas = [row[0] for row in _rows(connection, (
+        "SELECT p.entity_meta FROM {s}.chat_message_group g"
+        " JOIN {s}.chat_participants p ON p.id = g.author_participant_id"
+        " WHERE p.entity_name = 'application'").format(s=TARGET))]
+    assert metas == [{"id": own, "project_id": TARGET_ID}]
