@@ -111,6 +111,13 @@ SECTION_DEFINITIONS = {
         "description": "Control Voice-to-Voice, Text-to-Voice, and Voice-to-Text features environment-wide.",
         "always_visible": True,
     },
+    "chat_sharing": {
+        "title": "Chat Sharing",
+        "order": 90,
+        "icon": "share",
+        "description": "Control how chats can be shared outside the project.",
+        "always_visible": True,
+    },
     "chat_mentions": {
         "title": "Chat Mentions",
         "order": 90,
