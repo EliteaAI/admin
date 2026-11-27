@@ -47,6 +47,24 @@ def _scim_refusal(module, project_id, user_ids, roles=None):
     guards = _scim_guards(module)
     return guards.refusal(project_id, user_ids, roles) if guards is not None else None
 
+SELF_REMOVAL_CODE = "admin_self_removal"
+SELF_REMOVAL_MESSAGE = "You cannot remove yourself from the project while you have the admin role"
+ADMIN_ROLE_NAME = "admin"
+
+
+def _self_removal_refusal(module, project_id, user_ids):
+    """ 403 when an admin removes themselves: the project could be left without anyone to manage it.
+        ``code`` and ``message`` are what the UI reads to show the reason """
+    actor_id = auth.current_user()["id"]
+    if actor_id not in user_ids:
+        return None
+    roles = module.get_user_roles(project_id, actor_id)
+    if not any(str(role["name"]).lower() == ADMIN_ROLE_NAME for role in roles):
+        return None
+    log.warning("Admin %s tried to remove themselves from project %s", actor_id, project_id)
+    return {"code": SELF_REMOVAL_CODE, "message": SELF_REMOVAL_MESSAGE}, 403
+
+
 OFFSET_ERROR = "offset must be a whole number, 0 or more"
 
 
@@ -227,6 +245,11 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
         refusal = _scim_refusal(self.module, project_id, user_ids, roles=list(new_user_roles))
         if refusal:
             return refusal
+        # An empty role list removes the user from the project, so it is a removal like the DELETE below
+        if not new_user_roles:
+            refusal = _self_removal_refusal(self.module, project_id, user_ids)
+            if refusal:
+                return refusal
         result = self.module.context.rpc_manager.call.update_roles_for_user(
             project_id, user_ids, new_user_roles, audit_ctx=self.module.lifecycle_audit_ctx())
         return {'msg': f'roles updated' if result else 'something is wrong'}, 200
@@ -254,6 +277,9 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
         except TypeError:
             return 'IDs must be integers', 400
         refusal = _scim_refusal(self.module, project_id, delete_ids)
+        if refusal:
+            return refusal
+        refusal = _self_removal_refusal(self.module, project_id, delete_ids)
         if refusal:
             return refusal
         # remove_users_from_project fires user_removed_from_project itself.
