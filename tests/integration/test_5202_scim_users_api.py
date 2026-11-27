@@ -116,7 +116,7 @@ def test_token_authenticated_add_uses_actor_user_id_not_token_id(api, roles, mod
     assert api[2][-1] == (
         "notification",
         (PROTECTED, {9}, "user_was_added_to_some_project_as_teammate"),
-        {"actor_id": 1},
+        {"actor_id": 1, "roles": roles},
     )
 
 
@@ -144,7 +144,7 @@ def test_mixed_add_results_notify_only_committed_successes_and_keep_the_400_resp
     assert calls[-1] == (
         "notification",
         (PROTECTED, {9}, "user_was_added_to_some_project_as_teammate"),
-        {"actor_id": 1},
+        {"actor_id": 1, "roles": ["viewer"]},
     )
 
 

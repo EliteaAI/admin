@@ -63,6 +63,25 @@ def _read_notification_settings():
     return settings
 
 
+def _normalize_roles(roles):
+    """Return a de-duplicated list of non-empty role names, or an empty list when none are usable."""
+    if not isinstance(roles, (list, tuple, set, frozenset)):
+        return []
+    normalized = []
+    for role in roles:
+        if not isinstance(role, str):
+            continue
+        role = role.strip()
+        if role and role not in normalized:
+            normalized.append(role)
+    return normalized
+
+
+def _format_role_label(roles):
+    """Human readable role list, e.g. ['admin', 'editor'] -> 'Admin, Editor'."""
+    return ", ".join(role[:1].upper() + role[1:] for role in roles)
+
+
 def _get_team_project_name(module, project_id):
     """Return a project-name snapshot only for a project classified as team by projects RPC."""
     try:
@@ -84,8 +103,11 @@ def _get_team_project_name(module, project_id):
     return project_name
 
 
-def notify_project_membership_change(module, project_id, user_ids, event_type, actor_id=None):
-    """Publish one inbox event per eligible user; notification failures never affect membership changes."""
+def notify_project_membership_change(module, project_id, user_ids, event_type, actor_id=None, roles=None):
+    """Publish one inbox event per eligible user; notification failures never affect membership changes.
+
+    ``roles`` are the roles assigned by an invitation; they are only used for the added event.
+    """
     event_settings = _EVENT_SETTINGS.get(event_type)
     if event_settings is None:
         log.warning("Unsupported project membership notification event_type=%s", event_type)
@@ -125,15 +147,20 @@ def notify_project_membership_change(module, project_id, user_ids, event_type, a
     if project_name is None:
         return
 
+    message = message_template.format(project_name=project_name)
+    meta = {"project_name": project_name}
+    assigned_roles = _normalize_roles(roles) if event_type == "user_was_added_to_some_project_as_teammate" else []
+    if assigned_roles:
+        meta["roles"] = assigned_roles
+        message = f"{message[:-1]} as {_format_role_label(assigned_roles)}."
+    meta["message"] = message
+
     for user_id in eligible_ids:
         payload = {
             "project_id": project_id,
             "user_id": user_id,
             "event_type": event_type,
-            "meta": {
-                "project_name": project_name,
-                "message": message_template.format(project_name=project_name),
-            },
+            "meta": dict(meta),
         }
         try:
             module.context.event_manager.fire_event("notifications_stream", payload)

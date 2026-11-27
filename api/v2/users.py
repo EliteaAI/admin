@@ -190,6 +190,7 @@ class API(api_tools.APIBase):  # pylint: disable=R0903
             added_ids,
             "user_was_added_to_some_project_as_teammate",
             actor_id=actor_id,
+            roles=user_roles,
         )
         return results, 400 if has_errors else 200
 
